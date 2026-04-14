@@ -70,7 +70,7 @@ async def test_answer_question_uses_rag_context(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr("app.services.rag_service.complete_chat", _complete_chat)
 
     result = await RAGService().answer_question(
-        QueryRequest(question="ignored", top_k=3)
+        QueryRequest(question="ignored", top_k=3, language="en")
     )
 
     assert result.used_rag is True
@@ -88,7 +88,7 @@ async def test_answer_question_falls_back_without_hits(monkeypatch: pytest.Monke
     monkeypatch.setattr("app.services.rag_service.complete_chat", _fallback_chat)
 
     result = await RAGService().answer_question(
-        QueryRequest(question="ignored", top_k=3)
+        QueryRequest(question="ignored", top_k=3, language="zh")
     )
 
     assert result.used_rag is False
@@ -132,6 +132,7 @@ async def _complete_chat(system_prompt: str, user_prompt: str) -> str:
     assert "Context:" in user_prompt
     assert "do not use outside knowledge" in system_prompt.lower()
     assert "do not invent or substitute a different author" in user_prompt.lower()
+    assert "english" in user_prompt.lower()
     return "rag answer"
 
 

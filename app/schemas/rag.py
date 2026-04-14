@@ -49,6 +49,7 @@ class QueryRequest(BaseModel):
 
     question: str = Field(..., min_length=1, description="User question.")
     top_k: int | None = Field(default=None, ge=1, le=20)
+    language: str = Field(default="zh", pattern="^(zh|en)$")
 
 
 class QueryResponse(BaseModel):

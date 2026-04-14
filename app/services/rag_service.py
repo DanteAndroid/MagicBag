@@ -64,6 +64,10 @@ class RAGService:
             )
         return "\n\n".join(parts)
 
+    @staticmethod
+    def _language_name(language: str) -> str:
+        return "English" if language == "en" else "Chinese"
+
     async def ingest_documents(self, payload: IngestRequest) -> IngestResponse:
         """Read source documents, generate embeddings, and upsert vectors."""
         error = self._require_ingest_dependencies()
@@ -192,6 +196,7 @@ class RAGService:
         ]
 
         if strong_results:
+            answer_language = self._language_name(payload.language)
             answer = await complete_chat(
                 system_prompt=(
                     "You are a careful RAG assistant for magic performance study. "
@@ -206,8 +211,8 @@ class RAGService:
                 user_prompt=(
                     f"Question:\n{payload.question}\n\n"
                     f"Context:\n{self._format_context(strong_results)}\n\n"
-                    "Write a concise answer in Chinese for a magician studying "
-                    "performance methods. Mention source file names when useful. "
+                    f"Write a concise answer in {answer_language} for a magician "
+                    "studying performance methods. Mention source file names when useful. "
                     "Do not invent or substitute a different author, title, or book. "
                     "If the context names the source file, prefer that exact file name."
                 ),
@@ -225,8 +230,8 @@ class RAGService:
                 "You are a helpful assistant for magic performance study. Assume the "
                 "user is asking about lawful entertainment, stagecraft, or consensual "
                 "performance for magicians. Do not refuse simply because a method "
-                "involves deception as part of stage magic. Answer directly and, if "
-                "uncertain, say so."
+                "involves deception as part of stage magic. Answer directly in "
+                f"{self._language_name(payload.language)} and, if uncertain, say so."
             ),
             user_prompt=payload.question,
         )

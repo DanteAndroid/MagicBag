@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Magic Oracle</title>
+  <title>MagicBag | 魔法口袋</title>
   <style>
     :root {
       color-scheme: dark;
@@ -16,7 +16,6 @@
       --accent-soft: rgba(201, 168, 76, 0.18);
       --shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
       --radius: 20px;
-      --radius-sm: 14px;
       --max-width: 720px;
       --composer-height: 132px;
     }
@@ -59,7 +58,15 @@
     }
 
     .hero {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
       margin-bottom: 28px;
+    }
+
+    .hero-copy {
+      min-width: 0;
     }
 
     .brand {
@@ -70,6 +77,7 @@
       font-weight: 700;
       letter-spacing: 0.02em;
       color: var(--text);
+      flex-wrap: wrap;
     }
 
     .brand-mark {
@@ -77,10 +85,43 @@
       text-shadow: 0 0 20px rgba(201, 168, 76, 0.3);
     }
 
+    .brand-cn {
+      color: var(--accent);
+      font-weight: 600;
+    }
+
     .subtitle {
       margin: 10px 0 0;
       color: var(--muted);
       max-width: 52ch;
+    }
+
+    .lang-switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px;
+      background: rgba(36, 36, 36, 0.85);
+      border-radius: 999px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(12px);
+      flex-shrink: 0;
+    }
+
+    .lang-btn {
+      border: 0;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--muted);
+      padding: 8px 12px;
+      font: 600 13px/1 system-ui, sans-serif;
+      cursor: pointer;
+      transition: background 140ms ease, color 140ms ease;
+    }
+
+    .lang-btn.active {
+      background: var(--accent-soft);
+      color: var(--accent);
     }
 
     .chat {
@@ -378,6 +419,15 @@
         padding-top: 28px;
       }
 
+      .hero {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .lang-switch {
+        align-self: flex-end;
+      }
+
       .composer-card {
         gap: 10px;
         border-radius: 20px;
@@ -393,39 +443,95 @@
 <body>
   <main class="app">
     <header class="hero">
-      <div class="brand"><span class="brand-mark">✦</span> Magic Oracle</div>
-      <p class="subtitle">Ask about card magic, mentalism, and performance theory. The oracle searches your library and answers with cited source notes.</p>
+      <div class="hero-copy">
+        <div class="brand"><span class="brand-mark">✦</span> <span data-i18n="brandEn">MagicBag</span> <span class="brand-cn" data-i18n="brandCn">魔法口袋</span></div>
+        <p class="subtitle" data-i18n="subtitle">面向纸牌魔术、心灵魔术和表演理论的知识助手。它会检索你的资料库，并给出带来源的回答。</p>
+      </div>
+      <div class="lang-switch" aria-label="language switch">
+        <button class="lang-btn active" type="button" data-lang="zh">中文</button>
+        <button class="lang-btn" type="button" data-lang="en">EN</button>
+      </div>
     </header>
 
     <section id="chat" class="chat">
       <div id="emptyState" class="empty-state">
-        <h2>Start with one of these questions</h2>
-        <p>The page talks to your MagicRAG backend and turns the answer into a readable note with expandable source snippets.</p>
-        <div class="examples">
-          <button class="example-btn" data-question="How do I perform a convincing card force?">How do I perform a convincing card force?</button>
-          <button class="example-btn" data-question="What is the Equivoque technique?">What is the Equivoque technique?</button>
-          <button class="example-btn" data-question="Recommend a beginner mentalism routine">Recommend a beginner mentalism routine</button>
-        </div>
+        <h2 data-i18n="emptyTitle">从这些问题开始</h2>
+        <p data-i18n="emptyDesc">页面会连接你的 MagicRAG 后端，把回答和来源片段整理成可展开阅读的笔记。</p>
+        <div class="examples" id="examples"></div>
       </div>
     </section>
   </main>
 
   <div class="composer">
     <form id="composer" class="composer-card">
-      <textarea id="questionInput" rows="1" placeholder="Ask the oracle about a sleight, routine, or performance principle..."></textarea>
-      <button id="sendButton" class="send-btn" type="submit">Send</button>
+      <textarea id="questionInput" rows="1"></textarea>
+      <button id="sendButton" class="send-btn" type="submit" data-i18n="send">发送</button>
     </form>
   </div>
 
   <script>
-    const API_ENDPOINT = "https://magicbag-production.up.railway.app/api/v1/rag/query";
+    const FALLBACK_API_ENDPOINT = "https://magicbag-production.up.railway.app/api/v1/rag/query";
+    const API_ENDPOINT = window.location.protocol === "file:" ? FALLBACK_API_ENDPOINT : "/api/v1/rag/query";
     const chat = document.getElementById("chat");
     const emptyState = document.getElementById("emptyState");
     const composer = document.getElementById("composer");
     const input = document.getElementById("questionInput");
     const sendButton = document.getElementById("sendButton");
+    const examples = document.getElementById("examples");
 
+    const translations = {
+      zh: {
+        pageTitle: "MagicBag | 魔法口袋",
+        brandEn: "MagicBag",
+        brandCn: "魔法口袋",
+        subtitle: "面向纸牌魔术、心灵魔术和表演理论的知识助手。它会检索你的资料库，并给出带来源的回答。",
+        emptyTitle: "从这些问题开始",
+        emptyDesc: "页面会连接你的 MagicRAG 后端，把回答和来源片段整理成可展开阅读的笔记。",
+        inputPlaceholder: "问一个关于手法、流程或表演理论的问题……",
+        send: "发送",
+        copy: "复制",
+        copied: "已复制",
+        copyFailed: "失败",
+        noAnswer: "没有返回回答。",
+        noSnippet: "暂无原文片段。",
+        sourceLabel: "来源",
+        error: "无法连接到魔法口袋，请检查部署状态、接口地址或跨域配置。",
+        examples: [
+          "如何做一个有说服力的 force card？",
+          "什么是 Equivoque 技术？",
+          "推荐一个适合新手的心灵魔术 routine"
+        ]
+      },
+      en: {
+        pageTitle: "MagicBag | MagicBag",
+        brandEn: "MagicBag",
+        brandCn: "MagicBag",
+        subtitle: "A knowledge assistant for card magic, mentalism, and performance theory. It searches your library and answers with cited sources.",
+        emptyTitle: "Start with one of these questions",
+        emptyDesc: "The page talks to your MagicRAG backend and turns the answer into a readable note with expandable source snippets.",
+        inputPlaceholder: "Ask about a sleight, routine, or performance principle...",
+        send: "Send",
+        copy: "Copy",
+        copied: "Copied",
+        copyFailed: "Failed",
+        noAnswer: "No answer returned.",
+        noSnippet: "No snippet available.",
+        sourceLabel: "Source",
+        error: "Unable to reach MagicBag. Check the deployment, API endpoint, or CORS configuration.",
+        examples: [
+          "How do I perform a convincing card force?",
+          "What is the Equivoque technique?",
+          "Recommend a beginner mentalism routine"
+        ]
+      }
+    };
+
+    let language = "zh";
     let loadingNode = null;
+
+    function t(key) {
+      return translations[language][key];
+    }
 
     function escapeHtml(value) {
       return value
@@ -517,7 +623,7 @@
     function scrollToBottom() {
       window.scrollTo({
         top: document.documentElement.scrollHeight,
-        behavior: "smooth",
+        behavior: "smooth"
       });
     }
 
@@ -558,8 +664,8 @@
     function buildSources(sources) {
       if (!Array.isArray(sources) || !sources.length) return "";
       const items = sources.map((source, index) => {
-        const filename = source.metadata?.filename || source.source || ("Source " + (index + 1));
-        const snippet = source.content || "No snippet available.";
+        const filename = source.metadata?.filename || source.source || (t("sourceLabel") + " " + (index + 1));
+        const snippet = source.content || t("noSnippet");
         return [
           '<div class="source-item">',
           '<button class="source-chip" type="button">',
@@ -578,7 +684,7 @@
         "assistant",
         [
           '<div class="answer-card">',
-          '<button class="copy-btn" type="button">Copy</button>',
+          '<button class="copy-btn" type="button">' + escapeHtml(t("copy")) + "</button>",
           '<div class="answer-body">' + renderMarkdown(answer) + "</div>",
           buildSources(sources),
           "</div>"
@@ -589,14 +695,14 @@
       copyButton.addEventListener("click", async () => {
         try {
           await navigator.clipboard.writeText(answer);
-          copyButton.textContent = "Copied";
+          copyButton.textContent = t("copied");
           setTimeout(() => {
-            copyButton.textContent = "Copy";
+            copyButton.textContent = t("copy");
           }, 1200);
         } catch {
-          copyButton.textContent = "Failed";
+          copyButton.textContent = t("copyFailed");
           setTimeout(() => {
-            copyButton.textContent = "Copy";
+            copyButton.textContent = t("copy");
           }, 1200);
         }
       });
@@ -632,12 +738,13 @@
         const response = await fetch(API_ENDPOINT, {
           method: "POST",
           headers: {
-            "Content-Type": "application/json",
+            "Content-Type": "application/json"
           },
           body: JSON.stringify({
             question: trimmed,
             top_k: 3,
-          }),
+            language
+          })
         });
 
         if (!response.ok) {
@@ -649,18 +756,49 @@
 
         const answer = data.answer || (Array.isArray(data.results) && data.results.length
           ? data.results.map((item) => "- " + (item.content || "")).join("\n")
-          : "No answer returned.");
+          : t("noAnswer"));
         const sources = data.sources || data.results || [];
         createAssistantMessage(answer, sources);
       } catch (error) {
         removeLoadingMessage();
-        createErrorMessage("Unable to reach the oracle. Check the API endpoint or CORS configuration.");
+        createErrorMessage(t("error"));
         console.error(error);
       } finally {
         sendButton.disabled = false;
         input.focus();
         scrollToBottom();
       }
+    }
+
+    function renderExamples() {
+      examples.innerHTML = "";
+      for (const question of t("examples")) {
+        const button = document.createElement("button");
+        button.className = "example-btn";
+        button.type = "button";
+        button.textContent = question;
+        button.addEventListener("click", () => {
+          input.value = question;
+          autoResize();
+          input.focus();
+        });
+        examples.appendChild(button);
+      }
+    }
+
+    function applyLanguage(nextLanguage) {
+      language = nextLanguage;
+      document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
+      document.title = t("pageTitle");
+      input.placeholder = t("inputPlaceholder");
+      sendButton.textContent = t("send");
+      document.querySelectorAll("[data-i18n]").forEach((node) => {
+        node.textContent = t(node.dataset.i18n);
+      });
+      document.querySelectorAll(".lang-btn").forEach((button) => {
+        button.classList.toggle("active", button.dataset.lang === language);
+      });
+      renderExamples();
     }
 
     composer.addEventListener("submit", (event) => {
@@ -676,14 +814,11 @@
       }
     });
 
-    document.querySelectorAll(".example-btn").forEach((button) => {
-      button.addEventListener("click", () => {
-        input.value = button.dataset.question || "";
-        autoResize();
-        input.focus();
-      });
+    document.querySelectorAll(".lang-btn").forEach((button) => {
+      button.addEventListener("click", () => applyLanguage(button.dataset.lang));
     });
 
+    applyLanguage("zh");
     autoResize();
     input.focus();
   </script>
