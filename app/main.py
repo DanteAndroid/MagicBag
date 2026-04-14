@@ -5,13 +5,18 @@ uvicorn and Railway.
 """
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from app.api.routes import health, rag, stats
 from app.core.config import settings
 from app.core.logging import configure_logging
+
+
+INDEX_FILE = Path(__file__).resolve().parents[1] / "index.html"
 
 
 @asynccontextmanager
@@ -44,10 +49,6 @@ app.include_router(rag.router, prefix="/api/v1/rag", tags=["rag"])
 
 
 @app.get("/", summary="Root")
-async def root() -> dict[str, str]:
-    """Simple root endpoint for platform probes."""
-    return {
-        "service": settings.app_name,
-        "version": settings.app_version,
-        "status": "ok",
-    }
+async def root() -> FileResponse:
+    """Serve the single-page web client."""
+    return FileResponse(INDEX_FILE)

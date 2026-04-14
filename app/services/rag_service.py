@@ -194,14 +194,22 @@ class RAGService:
         if strong_results:
             answer = await complete_chat(
                 system_prompt=(
-                    "You are a careful RAG assistant. Answer only from the provided "
+                    "You are a careful RAG assistant for magic performance study. "
+                    "Assume the user is asking about lawful entertainment, stagecraft, "
+                    "or consensual performance for magicians. Do not moralize about "
+                    "magic methods. Use only the provided context and do not use "
+                    "outside knowledge or memory. If a title, author, date, or term "
+                    "appears in the context, preserve it exactly as written there. "
+                    "If your prior knowledge conflicts with the context, trust the "
                     "context. If the context is insufficient, say that directly."
                 ),
                 user_prompt=(
                     f"Question:\n{payload.question}\n\n"
                     f"Context:\n{self._format_context(strong_results)}\n\n"
-                    "Write a concise answer in Chinese and mention the source file names "
-                    "when useful."
+                    "Write a concise answer in Chinese for a magician studying "
+                    "performance methods. Mention source file names when useful. "
+                    "Do not invent or substitute a different author, title, or book. "
+                    "If the context names the source file, prefer that exact file name."
                 ),
             )
             return QueryResponse(
@@ -214,8 +222,11 @@ class RAGService:
 
         fallback_answer = await complete_chat(
             system_prompt=(
-                "You are a helpful assistant. Answer the question directly. "
-                "If you are uncertain, say so."
+                "You are a helpful assistant for magic performance study. Assume the "
+                "user is asking about lawful entertainment, stagecraft, or consensual "
+                "performance for magicians. Do not refuse simply because a method "
+                "involves deception as part of stage magic. Answer directly and, if "
+                "uncertain, say so."
             ),
             user_prompt=payload.question,
         )
