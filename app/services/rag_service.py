@@ -267,12 +267,65 @@ class RAGService:
             )
         )
 
+    @staticmethod
+    def _wants_multiple_items(question: str) -> bool:
+        lowered = question.lower()
+        return any(
+            hint in question or hint in lowered
+            for hint in (
+                "哪些",
+                "几种",
+                "多个",
+                "不同",
+                "有哪些方法",
+                "有哪些套路",
+                "list",
+                "multiple",
+                "several",
+                "different methods",
+                "what methods",
+                "which methods",
+            )
+        )
+
+    @classmethod
+    def _should_use_history(cls, question: str, history: list[ChatTurn]) -> bool:
+        if not history:
+            return False
+        if cls._is_followup_question(question):
+            return True
+
+        recent_user_turns = [
+            turn.content.strip()
+            for turn in history[-(cls.MAX_HISTORY_TURNS * 2) :]
+            if turn.role == "user" and turn.content.strip()
+        ]
+        if not recent_user_turns:
+            return False
+
+        latest_user_text = recent_user_turns[-1]
+        lowered = latest_user_text.lower()
+        return any(
+            hint in latest_user_text or hint in lowered
+            for hint in (
+                "继续",
+                "接着",
+                "接下来",
+                "这本书",
+                "这个方法",
+                "这个流程",
+                "keep going",
+                "continue",
+                "follow up",
+            )
+        )
+
     @classmethod
     def _source_rank_info(cls, question: str, result: SearchResult) -> dict[str, float | bool]:
         title = str(result.metadata.get("title") or "")
         author = str(result.metadata.get("author") or "")
         filename = str(result.metadata.get("filename") or result.source)
-        haystack = cls._normalized_text(" ".join([title, author, filename]))
+        haystack = cls._normalized_text(" ".join([title, author, filename, result.content]))
 
         phrases = cls._query_phrases(question)
         tokens = cls._query_tokens(question)
@@ -301,7 +354,7 @@ class RAGService:
             return []
 
         history = history or []
-        focus_text = cls._focus_text(question, history)
+        focus_text = cls._focus_text(question, history) if cls._should_use_history(question, history) else question
         grouped = cls._merge_results_by_source(results, max_sources=None, max_snippets_per_source=1)
         ranked = []
         for result in grouped:
@@ -320,17 +373,30 @@ class RAGService:
         if ranked:
             top = ranked[0]
             second = ranked[1] if len(ranked) > 1 else None
-            if top["phrase_match"]:
-                if second is None or (not second["phrase_match"] and top["adjusted_score"] - second["adjusted_score"] >= 0.05):
+            if not cls._wants_multiple_items(question):
+                if top["phrase_match"]:
+                    if second is None or (not second["phrase_match"] and top["adjusted_score"] - second["adjusted_score"] >= 0.05):
+                        select_count = 1
+                    elif cls._is_method_question(question) and top["adjusted_score"] - second["adjusted_score"] >= 0.12:
+                        select_count = 1
+                    elif history and cls._is_followup_question(question) and top["adjusted_score"] - second["adjusted_score"] >= 0.04:
+                        select_count = 1
+                elif cls._is_method_question(question) and second is not None and top["adjusted_score"] - second["adjusted_score"] >= 0.22:
                     select_count = 1
-                elif cls._is_method_question(question) and top["adjusted_score"] - second["adjusted_score"] >= 0.12:
-                    select_count = 1
-                elif history and cls._is_followup_question(question) and top["adjusted_score"] - second["adjusted_score"] >= 0.04:
-                    select_count = 1
-            elif cls._is_method_question(question) and second is not None and top["adjusted_score"] - second["adjusted_score"] >= 0.22:
-                select_count = 1
+            else:
+                select_count = min(max(2, settings.max_context_sources), len(ranked))
 
         selected_keys = {item["key"] for item in ranked[:select_count]}
+        if cls._wants_multiple_items(question) and cls._is_method_question(question):
+            lexical_keys = {
+                item["key"]
+                for item in ranked
+                if item["phrase_match"] or item["token_overlap"] >= 1
+            }
+            if lexical_keys:
+                selected_keys &= lexical_keys
+                if not selected_keys:
+                    selected_keys = lexical_keys
         selected_results = [result for result in results if cls._source_key(result) in selected_keys]
         selected_results.sort(key=lambda item: item.score, reverse=True)
         return selected_results
@@ -647,6 +713,9 @@ class RAGService:
 
     @classmethod
     def _build_search_query(cls, question: str, history: list[ChatTurn]) -> str:
+        if not cls._should_use_history(question, history):
+            return question
+
         recent_user_turns = [
             turn.content.strip()
             for turn in history[-(cls.MAX_HISTORY_TURNS * 2) :]
@@ -661,10 +730,23 @@ class RAGService:
     @classmethod
     def _answer_guidance(cls, question: str, language: str, history: list[ChatTurn]) -> str:
         followup_note = ""
-        if history and cls._is_followup_question(question):
+        if cls._should_use_history(question, history):
             followup_note = (
                 "Use the recent conversation to resolve references like 'it', 'this book', "
                 "or 'that method' before answering.\n"
+            )
+
+        if cls._wants_multiple_items(question) and cls._is_method_question(question):
+            if language == "zh":
+                return (
+                    followup_note
+                    + "这是一个要求列举多个方法的问题。请按不同方法分别回答，每种方法单独成段，"
+                    "写清名称、核心思路、流程特点和适用场景。如果上下文只提供部分细节，就明确标出哪一部分是已知信息。"
+                )
+            return (
+                followup_note
+                + "This question asks for multiple methods. Answer by separating distinct methods, "
+                "and for each one explain its name, core idea, flow, and best use case."
             )
 
         if cls._is_method_question(question):
@@ -706,11 +788,13 @@ class RAGService:
 
     @classmethod
     def _max_answer_tokens(cls, question: str, history: list[ChatTurn]) -> int:
+        if cls._wants_multiple_items(question) and cls._is_method_question(question):
+            return 900
         if cls._is_method_question(question):
             return 700
         if cls._is_summary_question(question):
             return 620
-        if history and cls._is_followup_question(question):
+        if cls._should_use_history(question, history):
             return 420
         return 520
 

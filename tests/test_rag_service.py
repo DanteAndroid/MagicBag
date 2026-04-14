@@ -310,6 +310,42 @@ def test_select_context_results_prefers_named_method_source() -> None:
     assert selected[0].metadata["author"] == "Fraser Parker"
 
 
+def test_select_context_results_keeps_multiple_sources_for_multiple_methods_question() -> None:
+    selected = RAGService._select_context_results(
+        "which hand有哪些方法",
+        [
+            _search_result(
+                "48 Which Hand Fraser Parker.md",
+                0,
+                "three phase which hand",
+                0.68,
+                title="Which Hand",
+                author="Fraser Parker",
+            ),
+            _search_result(
+                "27 Mark Elsdon Tequila Hustler Original.md",
+                7,
+                "A participant hides a coin in either hand and the performer identifies which hand holds it.",
+                0.66,
+                title="Tequila Hustler Original",
+                author="Mark Elsdon",
+            ),
+            _search_result(
+                "Practical Mental Magic.txt",
+                113,
+                "Paper folding and billet switch technique.",
+                0.64,
+                title="Practical Mental Magic",
+                author=None,
+            ),
+        ],
+    )
+
+    assert len(selected) >= 2
+    assert selected[0].metadata["title"] == "Which Hand"
+    assert all(item.metadata["title"] != "Practical Mental Magic" for item in selected)
+
+
 def test_select_context_results_uses_history_for_followup() -> None:
     selected = RAGService._select_context_results(
         "有什么表演技巧吗？",
@@ -334,11 +370,23 @@ def test_select_context_results_uses_history_for_followup() -> None:
         history=[
             ChatTurn(role="user", content="Strong Magic 讲了什么？"),
             ChatTurn(role="assistant", content="它讨论表演理论。"),
+            ChatTurn(role="user", content="我想继续问这本书。"),
         ],
     )
 
     assert len(selected) == 1
     assert selected[0].metadata["title"] == "Strong Magic"
+
+
+def test_build_search_query_ignores_history_for_non_followup() -> None:
+    query = RAGService._build_search_query(
+        "which hand有哪些方法",
+        [
+            ChatTurn(role="user", content="Strong Magic 讲了什么？"),
+            ChatTurn(role="assistant", content="它讨论表演理论。"),
+        ],
+    )
+    assert query == "which hand有哪些方法"
 
 
 def test_build_search_query_includes_recent_user_context() -> None:
