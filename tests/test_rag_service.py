@@ -139,5 +139,12 @@ async def _complete_chat(system_prompt: str, user_prompt: str) -> str:
     return "rag answer"
 
 
+def test_term_guide_for_chinese() -> None:
+    guide = RAGService._term_guide("zh")
+    assert "Force -> 迫选" in guide
+    assert "Double lift -> 双翻" in guide
+    assert "If one of these terms is needed" in guide
+
+
 async def _fallback_chat(system_prompt: str, user_prompt: str) -> str:
     return "fallback answer"

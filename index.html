@@ -283,6 +283,13 @@
       color: var(--accent);
     }
 
+    .answer-body hr {
+      border: 0;
+      height: 1px;
+      margin: 1.2em 0;
+      background: linear-gradient(90deg, transparent, rgba(201, 168, 76, 0.5), transparent);
+    }
+
     .sources {
       margin-top: 18px;
       display: flex;
@@ -521,9 +528,11 @@
         sourceLabel: "来源",
         error: "无法连接到魔法口袋，请检查部署状态、接口地址或跨域配置。",
         examples: [
-          "如何做一个有说服力的 force card？",
-          "什么是 Equivoque 技术？",
-          "推荐一个适合新手的心灵魔术 routine"
+          "如何做一个令人信服的迫牌？",
+          "什么是双关语？",
+          "推荐一个适合新手的心灵魔术流程",
+          "如何让双翻转看起来更自然？",
+          "观众管理在纸牌魔术里为什么重要？"
         ]
       },
       en: {
@@ -545,7 +554,9 @@
         examples: [
           "How do I perform a convincing card force?",
           "What is the Equivoque technique?",
-          "Recommend a beginner mentalism routine"
+          "Recommend a beginner mentalism routine",
+          "How can I make a double lift look natural?",
+          "Why is audience management important in card magic?"
         ]
       }
     };
@@ -608,6 +619,13 @@
           flushList();
           const level = headingMatch[1].length;
           blocks.push("<h" + level + ">" + inlineMarkdown(headingMatch[2]) + "</h" + level + ">");
+          continue;
+        }
+
+        if (/^([-*_])\1{2,}$/.test(line.replace(/\s+/g, ""))) {
+          flushParagraph();
+          flushList();
+          blocks.push("<hr>");
           continue;
         }
 

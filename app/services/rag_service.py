@@ -34,6 +34,57 @@ from app.services.document_loader import chunk_document, discover_documents
 class RAGService:
     """Service object for RAG workflows."""
 
+    ZH_TERM_GUIDE = """
+Use this glossary when answering in Chinese:
+Force -> 迫选
+Forcing card -> 迫牌
+Free choice -> 自由选择
+Equivoque -> 双关语
+Control -> 控牌
+Double lift -> 双翻
+Break -> 间隔
+Cut -> 切牌
+Shuffle -> 洗牌
+Stack -> 预设顺序
+Peek -> 偷看
+Glimpse -> 瞬间偷看
+Impression device -> 印记器
+Center tear -> 中心撕纸法
+Billet -> 纸条
+Switch -> 偷换
+Nail writer -> 指写器
+Revelation -> 揭示
+Prediction -> 预言
+Thought-of card -> 心中所想的牌
+Suggestion -> 暗示
+Psychological force -> 心理强迫
+Verbal control -> 语言控牌
+Framing -> 框架
+Leading -> 引导
+Compliance -> 顺从
+Misdirection -> 错误引导
+Attention management -> 注意力管理
+Convincer -> 可信动作
+Sleight -> 手法
+Sleight of hand -> 纯手法
+Pass -> Pass
+Palm -> 藏牌
+Top change -> 换顶牌
+False shuffle -> 假洗
+False cut -> 假切
+Key card -> 关键牌
+Crimp -> 折痕标记
+Marked deck -> 记号牌
+Routine -> 流程
+Effect -> 效果
+Opener -> 开场效果
+Closer -> 收尾效果
+Callback -> 呼应效果
+Beat -> 节奏点
+Timing -> 时机
+Clean -> 干净
+""".strip()
+
     @staticmethod
     def _require_ingest_dependencies() -> str | None:
         if not settings.deepseek_api_key:
@@ -67,6 +118,16 @@ class RAGService:
     @staticmethod
     def _language_name(language: str) -> str:
         return "English" if language == "en" else "Chinese"
+
+    @classmethod
+    def _term_guide(cls, language: str) -> str:
+        if language != "zh":
+            return ""
+        return (
+            "\n\nTerminology guide for Chinese answers:\n"
+            f"{cls.ZH_TERM_GUIDE}\n"
+            "If one of these terms is needed, prefer the glossary wording."
+        )
 
     async def ingest_documents(self, payload: IngestRequest) -> IngestResponse:
         """Read source documents, generate embeddings, and upsert vectors."""
@@ -223,6 +284,7 @@ class RAGService:
                     "file, prefer that exact file name. If the answer language is Chinese, "
                     "use natural, idiomatic Simplified Chinese instead of literal translation, "
                     "but keep names and titles exactly as they appear in the context."
+                    f"{self._term_guide(payload.language)}"
                 ),
             )
             return QueryResponse(
