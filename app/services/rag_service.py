@@ -34,56 +34,104 @@ from app.services.document_loader import chunk_document, discover_documents
 class RAGService:
     """Service object for RAG workflows."""
 
-    ZH_TERM_GUIDE = """
-Use this glossary when answering in Chinese:
-Force -> 迫选
-Forcing card -> 迫牌
-Free choice -> 自由选择
-Equivoque -> 双关语
-Control -> 控牌
-Double lift -> 双翻
-Break -> 间隔
-Cut -> 切牌
-Shuffle -> 洗牌
-Stack -> 预设顺序
-Peek -> 偷看
-Glimpse -> 瞬间偷看
-Impression device -> 印记器
-Center tear -> 中心撕纸法
-Billet -> 纸条
-Switch -> 偷换
-Nail writer -> 指写器
-Revelation -> 揭示
-Prediction -> 预言
-Thought-of card -> 心中所想的牌
-Suggestion -> 暗示
-Psychological force -> 心理强迫
-Verbal control -> 语言控牌
-Framing -> 框架
-Leading -> 引导
-Compliance -> 顺从
-Misdirection -> 错误引导
-Attention management -> 注意力管理
-Convincer -> 可信动作
-Sleight -> 手法
-Sleight of hand -> 纯手法
-Pass -> Pass
-Palm -> 藏牌
-Top change -> 换顶牌
-False shuffle -> 假洗
-False cut -> 假切
-Key card -> 关键牌
-Crimp -> 折痕标记
-Marked deck -> 记号牌
-Routine -> 流程
-Effect -> 效果
-Opener -> 开场效果
-Closer -> 收尾效果
-Callback -> 呼应效果
-Beat -> 节奏点
-Timing -> 时机
-Clean -> 干净
-""".strip()
+    QUERY_SYNONYMS = {
+        "迫选": "Force",
+        "迫牌": "Forcing card",
+        "自由选择": "Free choice",
+        "双关语": "Equivoque",
+        "控牌": "Control",
+        "双翻": "Double lift",
+        "间隔": "Break",
+        "切牌": "Cut",
+        "洗牌": "Shuffle",
+        "预设顺序": "Stack",
+        "偷看": "Peek",
+        "瞬间偷看": "Glimpse",
+        "印记器": "Impression device",
+        "中心撕纸法": "Center tear",
+        "纸条": "Billet",
+        "偷换": "Switch",
+        "指写器": "Nail writer",
+        "揭示": "Revelation",
+        "预言": "Prediction",
+        "心中所想的牌": "Thought-of card",
+        "暗示": "Suggestion",
+        "心理强迫": "Psychological force",
+        "语言控牌": "Verbal control",
+        "框架": "Framing",
+        "引导": "Leading",
+        "顺从": "Compliance",
+        "错误引导": "Misdirection",
+        "注意力管理": "Attention management",
+        "可信动作": "Convincer",
+        "手法": "Sleight",
+        "纯手法": "Sleight of hand",
+        "藏牌": "Palm",
+        "换顶牌": "Top change",
+        "假洗": "False shuffle",
+        "假切": "False cut",
+        "关键牌": "Key card",
+        "折痕标记": "Crimp",
+        "记号牌": "Marked deck",
+        "流程": "Routine",
+        "效果": "Effect",
+        "开场效果": "Opener",
+        "收尾效果": "Closer",
+        "呼应效果": "Callback",
+        "节奏点": "Beat",
+        "时机": "Timing",
+        "干净": "Clean",
+    }
+
+    TERM_GLOSSARY = {
+        "Force": "迫选",
+        "Forcing card": "迫牌",
+        "Free choice": "自由选择",
+        "Equivoque": "双关语",
+        "Control": "控牌",
+        "Double lift": "双翻",
+        "Break": "间隔",
+        "Cut": "切牌",
+        "Shuffle": "洗牌",
+        "Stack": "预设顺序",
+        "Peek": "偷看",
+        "Glimpse": "瞬间偷看",
+        "Impression device": "印记器",
+        "Center tear": "中心撕纸法",
+        "Billet": "纸条",
+        "Switch": "偷换",
+        "Nail writer": "指写器",
+        "Revelation": "揭示",
+        "Prediction": "预言",
+        "Thought-of card": "心中所想的牌",
+        "Suggestion": "暗示",
+        "Psychological force": "心理强迫",
+        "Verbal control": "语言控牌",
+        "Framing": "框架",
+        "Leading": "引导",
+        "Compliance": "顺从",
+        "Misdirection": "错误引导",
+        "Attention management": "注意力管理",
+        "Convincer": "可信动作",
+        "Sleight": "手法",
+        "Sleight of hand": "纯手法",
+        "Pass": "Pass",
+        "Palm": "藏牌",
+        "Top change": "换顶牌",
+        "False shuffle": "假洗",
+        "False cut": "假切",
+        "Key card": "关键牌",
+        "Crimp": "折痕标记",
+        "Marked deck": "记号牌",
+        "Routine": "流程",
+        "Effect": "效果",
+        "Opener": "开场效果",
+        "Closer": "收尾效果",
+        "Callback": "呼应效果",
+        "Beat": "节奏点",
+        "Timing": "时机",
+        "Clean": "干净",
+    }
 
     @staticmethod
     def _require_ingest_dependencies() -> str | None:
@@ -120,13 +168,46 @@ Clean -> 干净
         return "English" if language == "en" else "Chinese"
 
     @classmethod
+    def _expand_query(cls, query: str) -> str:
+        """Append canonical English terms for known Chinese glossary entries."""
+        additions: list[str] = []
+        lowered = query.lower()
+        for zh_term, canonical in cls.QUERY_SYNONYMS.items():
+            if zh_term in query and canonical.lower() not in lowered:
+                additions.append(canonical)
+        if not additions:
+            return query
+        return f"{query}\n\nRelated glossary terms: {', '.join(additions)}"
+
+    @classmethod
     def _term_guide(cls, language: str) -> str:
         if language != "zh":
             return ""
+
+        return ""
+
+    @classmethod
+    def _relevant_term_guide(cls, language: str, question: str, results: list[SearchResult]) -> str:
+        """Return only glossary lines relevant to the current question/context."""
+        if language != "zh":
+            return ""
+
+        haystack = "\n".join(
+            [question, *[result.content for result in results], *[result.source for result in results]]
+        ).lower()
+        matched: list[str] = []
+        for zh_term, canonical in cls.QUERY_SYNONYMS.items():
+            if zh_term in haystack or canonical.lower() in haystack:
+                matched.append(f"{canonical} -> {cls.TERM_GLOSSARY.get(canonical, zh_term)}")
+
+        if not matched:
+            return ""
+
+        unique_lines = list(dict.fromkeys(matched))[:8]
         return (
             "\n\nTerminology guide for Chinese answers:\n"
-            f"{cls.ZH_TERM_GUIDE}\n"
-            "If one of these terms is needed, prefer the glossary wording."
+            + "\n".join(unique_lines)
+            + "\nIf one of these terms is needed, prefer the glossary wording."
         )
 
     async def ingest_documents(self, payload: IngestRequest) -> IngestResponse:
@@ -219,7 +300,8 @@ Clean -> 干净
         if error:
             return SearchResponse(query=payload.query, results=[])
 
-        vector = (await embed_texts([payload.query]))[0]
+        expanded_query = self._expand_query(payload.query)
+        vector = (await embed_texts([expanded_query]))[0]
         points = query_points(
             vector=vector,
             limit=payload.top_k or settings.top_k,
@@ -284,7 +366,7 @@ Clean -> 干净
                     "file, prefer that exact file name. If the answer language is Chinese, "
                     "use natural, idiomatic Simplified Chinese instead of literal translation, "
                     "but keep names and titles exactly as they appear in the context."
-                    f"{self._term_guide(payload.language)}"
+                    f"{self._relevant_term_guide(payload.language, payload.question, strong_results)}"
                 ),
             )
             return QueryResponse(

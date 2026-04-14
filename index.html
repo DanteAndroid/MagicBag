@@ -187,6 +187,10 @@
       justify-content: flex-start;
     }
 
+    .assistant-shell {
+      width: min(100%, 620px);
+    }
+
     .bubble,
     .answer-card {
       width: min(100%, 620px);
@@ -203,14 +207,18 @@
     .answer-card {
       position: relative;
       background: rgba(36, 36, 36, 0.92);
-      padding: 18px 18px 16px;
+      padding: 14px 16px 16px;
       backdrop-filter: blur(10px);
     }
 
+    .assistant-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      margin-bottom: 8px;
+    }
+
     .copy-btn {
-      position: absolute;
-      top: 14px;
-      right: 14px;
       border: 0;
       border-radius: 999px;
       background: rgba(255, 255, 255, 0.04);
@@ -227,7 +235,6 @@
     }
 
     .answer-body {
-      padding-right: 72px;
       color: var(--text);
     }
 
@@ -353,6 +360,12 @@
 
     .typing span:nth-child(3) {
       animation-delay: 240ms;
+    }
+
+    .loading-meta {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
     }
 
     .composer {
@@ -486,8 +499,8 @@
 
     <section id="chat" class="chat">
       <div id="emptyState" class="empty-state">
-        <h2 data-i18n="emptyTitle">从这些问题开始</h2>
-        <p data-i18n="emptyDesc">页面会连接你的 MagicRAG 后端，把回答和来源片段整理成可展开阅读的笔记。</p>
+        <h2 data-i18n="emptyTitle">你可以问：</h2>
+        <p data-i18n="emptyDesc"></p>
         <div class="examples" id="examples"></div>
       </div>
     </section>
@@ -516,8 +529,8 @@
         brandEn: "MagicBag",
         brandCn: "魔法口袋",
         subtitle: "纸牌魔术、心灵魔术和表演理论的知识助手。",
-        emptyTitle: "从这些问题开始",
-        emptyDesc: "点击推荐问题可直接提问，回答会以流式方式呈现，并附上可展开的来源片段。",
+        emptyTitle: "你可以问：",
+        emptyDesc: "",
         inputPlaceholder: "问一个关于手法、流程或表演理论的问题……",
         send: "发送",
         copy: "复制",
@@ -527,12 +540,16 @@
         noSnippet: "暂无原文片段。",
         sourceLabel: "来源",
         error: "无法连接到魔法口袋，请检查部署状态、接口地址或跨域配置。",
+        loadingConnecting: "正在连接服务…",
+        loadingWaiting: "已发送请求，等待返回…",
+        loadingRendering: "正在渲染回答…",
+        loadingElapsed: "已等待 {seconds}s",
         examples: [
-          "如何做一个令人信服的迫牌？",
-          "什么是双关语？",
-          "推荐一个适合新手的心灵魔术流程",
-          "如何让双翻转看起来更自然？",
-          "观众管理在纸牌魔术里为什么重要？"
+          "什么是迫牌？可以简单解释一下吗？",
+          "推荐一个适合新手的纸牌魔术效果",
+          "新手练习纸牌手法应该先学什么？",
+          "什么是心灵魔术？适合从哪里开始？",
+          "怎样让观众觉得表演更自然？"
         ]
       },
       en: {
@@ -540,8 +557,8 @@
         brandEn: "MagicBag",
         brandCn: "MagicBag",
         subtitle: "A knowledge assistant for card magic, mentalism, and performance theory.",
-        emptyTitle: "Start with one of these questions",
-        emptyDesc: "Click a suggested question to send it immediately. Answers render as markdown with a streaming reveal and expandable source snippets.",
+        emptyTitle: "You can ask:",
+        emptyDesc: "",
         inputPlaceholder: "Ask about a sleight, routine, or performance principle...",
         send: "Send",
         copy: "Copy",
@@ -551,18 +568,25 @@
         noSnippet: "No snippet available.",
         sourceLabel: "Source",
         error: "Unable to reach MagicBag. Check the deployment, API endpoint, or CORS configuration.",
+        loadingConnecting: "Connecting to service…",
+        loadingWaiting: "Request sent, waiting for response…",
+        loadingRendering: "Rendering answer…",
+        loadingElapsed: "Waiting {seconds}s",
         examples: [
-          "How do I perform a convincing card force?",
-          "What is the Equivoque technique?",
-          "Recommend a beginner mentalism routine",
-          "How can I make a double lift look natural?",
-          "Why is audience management important in card magic?"
+          "What is a card force in simple terms?",
+          "Recommend a beginner-friendly card magic effect",
+          "What should a beginner practice first in card magic?",
+          "What is mentalism, and where should a beginner start?",
+          "How can I make my performance feel more natural?"
         ]
       }
     };
 
     let language = "zh";
     let loadingNode = null;
+    let loadingTimer = null;
+    let loadingStartedAt = 0;
+    let loadingStage = "connecting";
 
     function t(key) {
       return translations[language][key];
@@ -613,7 +637,7 @@
           continue;
         }
 
-        const headingMatch = line.match(/^(#{1,3})\s+(.*)$/);
+        const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
         if (headingMatch) {
           flushParagraph();
           flushList();
@@ -714,14 +738,52 @@
       createMessage("user", '<div class="bubble">' + escapeHtml(question) + "</div>");
     }
 
+    function formatText(template, values) {
+      return template.replace(/\{(\w+)\}/g, (_, key) => values[key] ?? "");
+    }
+
     function createLoadingMessage() {
       loadingNode = createMessage(
         "assistant",
-        '<div class="answer-card"><div class="answer-body"><div class="typing"><span></span><span></span><span></span></div></div></div>'
+        [
+          '<div class="answer-card">',
+          '<div class="answer-body">',
+          '<div class="typing"><span></span><span></span><span></span></div>',
+          '<div class="loading-meta">',
+          '<div class="loading-state"></div>',
+          '<div class="loading-elapsed"></div>',
+          "</div>",
+          "</div>",
+          "</div>"
+        ].join("")
       );
+      loadingStartedAt = Date.now();
+      loadingStage = "connecting";
+
+      const stateNode = loadingNode.querySelector(".loading-state");
+      const elapsedNode = loadingNode.querySelector(".loading-elapsed");
+      const tick = () => {
+        if (!loadingNode) return;
+        stateNode.textContent =
+          loadingStage === "connecting"
+            ? t("loadingConnecting")
+            : loadingStage === "rendering"
+              ? t("loadingRendering")
+              : t("loadingWaiting");
+        elapsedNode.textContent = formatText(t("loadingElapsed"), {
+          seconds: Math.max(1, Math.floor((Date.now() - loadingStartedAt) / 1000))
+        });
+      };
+
+      tick();
+      loadingTimer = window.setInterval(tick, 900);
     }
 
     function removeLoadingMessage() {
+      if (loadingTimer) {
+        clearInterval(loadingTimer);
+        loadingTimer = null;
+      }
       if (loadingNode) {
         loadingNode.remove();
         loadingNode = null;
@@ -750,10 +812,14 @@
       const card = createMessage(
         "assistant",
         [
-          '<div class="answer-card">',
+          '<div class="assistant-shell">',
+          '<div class="assistant-actions">',
           '<button class="copy-btn" type="button">' + escapeHtml(t("copy")) + "</button>",
+          "</div>",
+          '<div class="answer-card">',
           '<div class="answer-body"></div>',
           buildSources(sources),
+          "</div>",
           "</div>"
         ].join("")
       );
@@ -763,8 +829,8 @@
       copyButton.disabled = true;
 
       const total = answer.length;
-      const step = total > 1800 ? 10 : total > 900 ? 6 : 3;
-      const delay = total > 1800 ? 10 : total > 900 ? 14 : 18;
+      const step = total > 1800 ? 36 : total > 900 ? 22 : 12;
+      const delay = total > 1800 ? 2 : total > 900 ? 4 : 7;
       for (let index = step; index < total + step; index += step) {
         body.innerHTML = renderMarkdown(answer.slice(0, index));
         scrollToBottom();
@@ -831,7 +897,9 @@
           throw new Error("Request failed with status " + response.status);
         }
 
+        loadingStage = "waiting";
         const data = await response.json();
+        loadingStage = "rendering";
         removeLoadingMessage();
 
         const answer = data.answer || (Array.isArray(data.results) && data.results.length

@@ -61,6 +61,25 @@ async def test_semantic_search_returns_payload_results(monkeypatch: pytest.Monke
 
 
 @pytest.mark.asyncio
+async def test_semantic_search_expands_glossary_terms(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {}
+
+    async def _capture_embed(texts: list[str]) -> list[list[float]]:
+        captured["query"] = texts[0]
+        return [[1.0, 0.0, 1.0]]
+
+    monkeypatch.setattr("app.services.rag_service.settings.deepseek_api_key", "key")
+    monkeypatch.setattr("app.services.rag_service.settings.qdrant_url", "https://example.com")
+    monkeypatch.setattr("app.services.rag_service.settings.qdrant_api_key", "secret")
+    monkeypatch.setattr("app.services.rag_service.embed_texts", _capture_embed)
+    monkeypatch.setattr("app.services.rag_service.query_points", lambda vector, limit, score_threshold: [])
+
+    await RAGService().semantic_search(SearchRequest(query="什么是双关语？"))
+
+    assert "Equivoque" in captured["query"]
+
+
+@pytest.mark.asyncio
 async def test_answer_question_uses_rag_context(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         RAGService,
@@ -140,9 +159,12 @@ async def _complete_chat(system_prompt: str, user_prompt: str) -> str:
 
 
 def test_term_guide_for_chinese() -> None:
-    guide = RAGService._term_guide("zh")
-    assert "Force -> 迫选" in guide
-    assert "Double lift -> 双翻" in guide
+    guide = RAGService._relevant_term_guide(
+        "zh",
+        "什么是双关语？",
+        [],
+    )
+    assert "Equivoque -> 双关语" in guide
     assert "If one of these terms is needed" in guide
 
 
