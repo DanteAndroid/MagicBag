@@ -4,7 +4,15 @@ from functools import lru_cache
 from typing import Any
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PayloadSchemaType,
+    PointStruct,
+    VectorParams,
+)
 
 from app.core.config import settings
 
@@ -25,6 +33,12 @@ def ensure_collection(force_recreate: bool = False) -> None:
         client.delete_collection(settings.qdrant_collection_name)
 
     if client.collection_exists(settings.qdrant_collection_name):
+        client.create_payload_index(
+            collection_name=settings.qdrant_collection_name,
+            field_name="source",
+            field_schema=PayloadSchemaType.KEYWORD,
+            wait=True,
+        )
         return
 
     client.create_collection(
@@ -33,6 +47,12 @@ def ensure_collection(force_recreate: bool = False) -> None:
             size=settings.qdrant_vector_size,
             distance=Distance.COSINE,
         ),
+    )
+    client.create_payload_index(
+        collection_name=settings.qdrant_collection_name,
+        field_name="source",
+        field_schema=PayloadSchemaType.KEYWORD,
+        wait=True,
     )
 
 
@@ -68,3 +88,22 @@ def query_points(vector: list[float], limit: int, score_threshold: float) -> lis
         score_threshold=score_threshold,
     )
     return list(response.points)
+
+
+def count_points_for_source(source: str) -> int:
+    """Return how many points already exist for a given source file."""
+    if not get_qdrant_client().collection_exists(settings.qdrant_collection_name):
+        return 0
+
+    return get_qdrant_client().count(
+        collection_name=settings.qdrant_collection_name,
+        count_filter=Filter(
+            must=[
+                FieldCondition(
+                    key="source",
+                    match=MatchValue(value=source),
+                )
+            ]
+        ),
+        exact=True,
+    ).count

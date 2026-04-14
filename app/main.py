@@ -7,6 +7,7 @@ uvicorn and Railway.
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import health, rag, stats
 from app.core.config import settings
@@ -27,6 +28,14 @@ app = FastAPI(
     version=settings.app_version,
     description="Magic knowledge RAG service skeleton.",
     lifespan=lifespan,
+)
+
+# Allow the standalone HTML client to call the API from file:// or any web host.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(health.router, prefix="/health", tags=["health"])

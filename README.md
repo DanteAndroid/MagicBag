@@ -1,6 +1,6 @@
 # MagicRAG
 
-![image-20260414140123497](/Users/l/Library/Application Support/typora-user-images/image-20260414140123497.png)
+![image-20260414140123497](structure.png)
 
 一个给魔术资料做知识库检索的 RAG 服务，技术栈是 FastAPI + Qdrant + DeepSeek 兼容接口。
 

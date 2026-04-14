@@ -22,6 +22,7 @@ async def test_ingest_documents_upserts_vectors(monkeypatch: pytest.MonkeyPatch,
     monkeypatch.setattr("app.services.rag_service.ensure_collection", lambda force_recreate=False: None)
     monkeypatch.setattr("app.services.rag_service.embed_texts", lambda texts: _embed(texts))
     monkeypatch.setattr("app.services.rag_service.upsert_points", lambda points: upserted.extend(points))
+    monkeypatch.setattr("app.services.rag_service.count_points_for_source", lambda source: 0)
 
     result = await RAGService().ingest_documents(IngestRequest())
 

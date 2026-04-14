@@ -10,7 +10,13 @@ from uuid import uuid5, NAMESPACE_URL
 from qdrant_client.models import PointStruct
 
 from app.core.config import settings
-from app.db.qdrant import count_points, ensure_collection, query_points, upsert_points
+from app.db.qdrant import (
+    count_points,
+    count_points_for_source,
+    ensure_collection,
+    query_points,
+    upsert_points,
+)
 from app.llm.deepseek import complete_chat, embed_texts
 from app.schemas.rag import (
     IngestRequest,
@@ -102,6 +108,10 @@ class RAGService:
         for path in files:
             try:
                 chunks = chunk_document(path)
+                if not payload.force_reindex:
+                    indexed_chunks = count_points_for_source(str(path))
+                    if indexed_chunks >= len(chunks):
+                        continue
                 for chunk_index, chunk in enumerate(chunks):
                     batch_texts.append(chunk)
                     batch_points.append(
