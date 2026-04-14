@@ -7,7 +7,7 @@ so application code reads from one place.
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -34,15 +34,33 @@ class Settings(BaseSettings):
     qdrant_collection_name: str = "magic_knowledge"
     qdrant_vector_size: int = 1024
 
-    deepseek_api_key: str = ""
-    deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_chat_model: str = "deepseek-chat"
-    deepseek_embedding_model: str = "text-embedding-v3"
+    # Support both the project's DEEPSEEK_* names and OpenAI-style names used
+    # by many compatible providers in deployment platforms.
+    deepseek_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("DEEPSEEK_API_KEY", "OPENAI_API_KEY"),
+    )
+    deepseek_base_url: str = Field(
+        default="https://api.deepseek.com",
+        validation_alias=AliasChoices("DEEPSEEK_BASE_URL", "OPENAI_BASE_URL"),
+    )
+    deepseek_chat_model: str = Field(
+        default="deepseek-chat",
+        validation_alias=AliasChoices("DEEPSEEK_CHAT_MODEL", "OPENAI_MODEL"),
+    )
+    deepseek_embedding_model: str = Field(
+        default="BAAI/bge-large-zh-v1.5",
+        validation_alias=AliasChoices(
+            "DEEPSEEK_EMBEDDING_MODEL",
+            "OPENAI_EMBEDDING_MODEL",
+        ),
+    )
+    embedding_batch_size: int = 32
 
     top_k: int = 5
     score_threshold: float = 0.45
-    chunk_size: int = 800
-    chunk_overlap: int = 120
+    chunk_size: int = 400
+    chunk_overlap: int = 60
 
 
 @lru_cache(maxsize=1)

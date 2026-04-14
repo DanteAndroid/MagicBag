@@ -2,8 +2,11 @@ fastapi==0.116.1
 uvicorn[standard]==0.35.0
 pydantic==2.11.7
 pydantic-settings==2.10.1
-qdrant-client==1.15.1
+qdrant-client==1.17.1
 openai==1.99.9
 httpx==0.28.1
 python-dotenv==1.1.1
+pypdf==5.9.0
+python-docx==1.2.0
 pytest==8.4.1
+pytest-asyncio==0.25.3

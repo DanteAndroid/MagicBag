@@ -1,54 +1,75 @@
 # MagicRAG
 
-一个可直接部署到 Railway 的魔术知识 RAG 项目骨架，技术栈为 FastAPI + Qdrant Cloud + DeepSeek。
+![image-20260414140123497](/Users/l/Library/Application Support/typora-user-images/image-20260414140123497.png)
 
-当前版本目标：
+一个给魔术资料做知识库检索的 RAG 服务，技术栈是 FastAPI + Qdrant + DeepSeek 兼容接口。
 
-- 提供完整可运行的项目结构
-- 预留文档入库、语义搜索、问答、健康检查、统计接口
-- 提供 Dockerfile、环境变量示例、基础测试和部署说明
+目前这个项目已经能做的事：
 
-当前版本不包含具体业务逻辑实现，所有关键位置都已留出注释，方便后续补全。
+- 启动 Web 服务
+- 扫描本地文档目录
+- 读取 `md`、`txt`、`html`、`pdf`、`docx`
+- 按配置切成文本块
+- 提供健康检查、入库、搜索、问答接口骨架
 
-## 项目结构
+目前还没做完的事：
 
-```text
-.
-├── app
-│   ├── api/routes          # 路由层
-│   ├── core                # 配置与日志
-│   ├── db                  # Qdrant 客户端
-│   ├── llm                 # DeepSeek 客户端
-│   ├── models              # 内部领域模型
-│   ├── schemas             # 请求/响应模型
-│   ├── services            # RAG 核心编排逻辑
-│   └── main.py             # FastAPI 入口
-├── tests                   # 基础测试
-├── .env.example            # 环境变量模板
-├── Dockerfile              # Railway 部署镜像
-├── requirements.txt        # Python 依赖
-└── README.md
+- 向量生成
+- 写入 Qdrant
+- 真正的语义搜索
+- 基于检索结果生成回答
+
+如果你是第一次接触这个项目，先看“快速开始”和“现在项目做到哪一步”。
+
+## 快速开始
+
+### 1. 安装依赖
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-## 接口列表
+### 2. 创建环境变量文件
 
-### `GET /`
+```bash
+cp .env.example .env
+```
 
-基础根接口。
+把 `.env` 里这几项先填好：
 
-### `GET /health`
+```env
+RAG_DOCUMENTS_DIR=/Users/l/RAG
+DEEPSEEK_API_KEY=你的密钥
+DEEPSEEK_BASE_URL=https://api.siliconflow.cn/v1
+DEEPSEEK_CHAT_MODEL=deepseek-ai/DeepSeek-V3.2-Exp
+```
 
-健康检查接口。
+说明：
 
-### `GET /stats`
+- `RAG_DOCUMENTS_DIR` 是你的知识库文档目录
+- `DEEPSEEK_*` 是模型接口配置
+- 如果你还没有接好 Qdrant，也可以先不填 `QDRANT_*`
 
-统计接口。
+### 3. 启动服务
 
-当前返回占位统计信息，后续应补 Qdrant collection stats、token 使用量、入库进度等。
+```bash
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
 
-### `POST /api/v1/rag/ingest`
+启动后打开：
 
-文档入库接口。
+- `http://127.0.0.1:8000/docs`
+- `http://127.0.0.1:8000/health`
+
+### 4. 扫描本地文档
+
+接口：
+
+```text
+POST /api/v1/rag/ingest
+```
 
 请求体：
 
@@ -58,174 +79,131 @@
 }
 ```
 
-当前行为：
+当前效果：
 
-- 扫描 `RAG_DOCUMENTS_DIR` 目录下支持的文档
-- 返回发现的文件数量
-- 不执行真实切片、向量化和入库
+- 读取 `RAG_DOCUMENTS_DIR` 下的文档
+- 按 `CHUNK_SIZE` 和 `CHUNK_OVERLAP` 切块
+- 返回发现了多少文档、切出了多少 chunk
+- 还不会写入 Qdrant
+
+## 现在项目做到哪一步
+
+### 已完成
+
+- Web 服务入口可运行
+- `GET /health`
+- `GET /stats`
+- `POST /api/v1/rag/ingest`
+- 本地文档扫描和切块
+- Railway Docker 部署
+
+### 未完成
+
+- embedding 生成
+- Qdrant collection 初始化
+- 向量 upsert
+- 语义检索
+- 回答生成
+
+## 接口说明
+
+### `GET /health`
+
+健康检查。
+
+### `GET /stats`
+
+返回当前配置下的基础统计信息。
+
+### `POST /api/v1/rag/ingest`
+
+扫描并切分本地文档。
 
 ### `POST /api/v1/rag/search`
 
-语义搜索接口。
-
-请求体：
-
-```json
-{
-  "query": "纸牌迫选原理",
-  "top_k": 5
-}
-```
-
-当前返回占位结果，后续需要在 `app/services/rag_service.py` 中接入：
-
-- DeepSeek embedding
-- Qdrant 向量检索
-- 可选 rerank
+接口已预留，暂时返回占位结果。
 
 ### `POST /api/v1/rag/query`
 
-LLM 回答接口。
+接口已预留，暂时返回占位结果。
 
-请求体：
+## 本地文档目录说明
 
-```json
-{
-  "question": "双翻转控制的经典思路是什么？",
-  "top_k": 5
-}
-```
-
-目标行为：
-
-- 先走 RAG 检索
-- 检索不到或分数过低时 fallback 到 DeepSeek 通用知识
-
-当前仅返回可运行的占位响应。
-
-## 本地运行
-
-### 1. 创建虚拟环境并安装依赖
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-### 2. 配置环境变量
-
-```bash
-cp .env.example .env
-```
-
-至少需要检查这些变量：
-
-- `RAG_DOCUMENTS_DIR`
-- `QDRANT_URL`
-- `QDRANT_API_KEY`
-- `DEEPSEEK_API_KEY`
-
-如果你的知识库文档放在本机 `l/RAG` 目录，按实际绝对路径填写，例如：
+你当前的文档目录建议直接用：
 
 ```env
-RAG_DOCUMENTS_DIR=/Users/你的用户名/l/RAG
+RAG_DOCUMENTS_DIR=/Users/l/RAG
 ```
 
-### 3. 启动服务
+这个目录里已经有大量资料，包括：
 
-```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
+- Markdown 文档
+- TXT 文档
+- PDF 文档
 
-打开：
-
-- `http://127.0.0.1:8000/docs`
-- `http://127.0.0.1:8000/health`
-
-### 4. 运行测试
-
-```bash
-pytest
-```
+项目现在会读取这些文件并做切块。
 
 ## Railway 部署
 
-### 方式一：直接从仓库部署
+Railway 检测到 `Dockerfile` 后会直接构建镜像。
 
-Railway 检测到 `Dockerfile` 后会直接按镜像构建。
+至少需要配置这些环境变量：
 
-需要在 Railway 配置以下环境变量：
+```env
+DEEPSEEK_API_KEY=你的线上密钥
+DEEPSEEK_BASE_URL=https://api.siliconflow.cn/v1
+DEEPSEEK_CHAT_MODEL=deepseek-ai/DeepSeek-V3.2-Exp
+RAG_DOCUMENTS_DIR=/data/rag
+```
 
-- `APP_NAME`
-- `APP_VERSION`
-- `ENVIRONMENT`
-- `HOST`
-- `PORT`
-- `LOG_LEVEL`
-- `RAG_DOCUMENTS_DIR`
-- `QDRANT_URL`
-- `QDRANT_API_KEY`
-- `QDRANT_COLLECTION_NAME`
-- `QDRANT_VECTOR_SIZE`
-- `DEEPSEEK_API_KEY`
-- `DEEPSEEK_BASE_URL`
-- `DEEPSEEK_CHAT_MODEL`
-- `DEEPSEEK_EMBEDDING_MODEL`
-- `TOP_K`
-- `SCORE_THRESHOLD`
-- `CHUNK_SIZE`
-- `CHUNK_OVERLAP`
+项目也兼容 OpenAI 风格变量名：
 
-### 文档目录说明
+- `OPENAI_API_KEY` 等价于 `DEEPSEEK_API_KEY`
+- `OPENAI_BASE_URL` 等价于 `DEEPSEEK_BASE_URL`
+- `OPENAI_MODEL` 等价于 `DEEPSEEK_CHAT_MODEL`
+- `OPENAI_EMBEDDING_MODEL` 等价于 `DEEPSEEK_EMBEDDING_MODEL`
 
-如果要让 Railway 上的入库接口扫描文档，需要保证 `RAG_DOCUMENTS_DIR` 在容器内存在。常见做法有两种：
+注意：
 
-1. 把知识库文件一起提交进仓库，再在环境变量里指向容器内路径。
-2. 给 Railway 服务挂载 volume，把文档同步到挂载目录。
+- Railway 上的 `RAG_DOCUMENTS_DIR` 必须是容器内真实存在的目录
+- 如果文档没有打进镜像或挂载 volume，线上服务虽然能启动，但不会扫到资料
 
-当前骨架不会自动上传文件到 Railway。
+## 常用命令
 
-## 后续应该补什么
+安装依赖：
 
-优先完善这些文件：
+```bash
+pip install -r requirements.txt
+```
 
-- `app/services/document_loader.py`
-  - 实现 markdown、txt、pdf、docx 的读取
-  - 实现 chunk 切片逻辑
+运行服务：
 
-- `app/services/rag_service.py`
-  - 文档切片后生成 embedding
-  - 创建或检查 Qdrant collection
-  - upsert 向量与 payload
-  - 搜索命中阈值判断
-  - 构建回答 prompt
-  - DeepSeek fallback
+```bash
+uvicorn app.main:app --reload
+```
 
-- `app/db/qdrant.py`
-  - collection 初始化
-  - 索引检查
-  - stats 查询
+运行测试：
 
-- `app/llm/deepseek.py`
-  - embedding 调用
-  - chat completion 调用
-  - 统一错误处理和超时控制
+```bash
+pytest -q
+```
 
-## 设计原则
+## 项目结构
 
-- 路由层只做参数校验和错误转换
-- 业务逻辑集中在 service 层
-- 第三方客户端集中在 `db` 与 `llm` 层
-- 所有环境变量统一从 `app/core/config.py` 管理
-
-## 备注
-
-这个骨架已经可以直接：
-
-- 本地启动 FastAPI
-- 运行基础测试
-- 构建 Docker 镜像
-- 部署到 Railway
-
-但它现在是“工程骨架可运行”，不是“RAG 业务已完成”。
+```text
+.
+├── app
+│   ├── api/routes
+│   ├── core
+│   ├── db
+│   ├── llm
+│   ├── models
+│   ├── schemas
+│   ├── services
+│   └── main.py
+├── tests
+├── .env.example
+├── Dockerfile
+├── requirements.txt
+└── README.md
+```
