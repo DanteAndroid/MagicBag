@@ -1,0 +1,1 @@
+"""MagicRAG application package."""
