@@ -6,6 +6,7 @@ assembly, and LLM fallback behavior.
 
 from functools import lru_cache
 from pathlib import Path
+import re
 from time import perf_counter
 from uuid import uuid5, NAMESPACE_URL
 
@@ -16,6 +17,7 @@ from app.db.qdrant import (
     count_points,
     count_points_for_source,
     ensure_collection,
+    fetch_source_chunks,
     query_points,
     upsert_points,
 )
@@ -174,6 +176,212 @@ class RAGService:
         return "English" if language == "en" else "Chinese"
 
     @staticmethod
+    def _source_key(result: SearchResult) -> str:
+        return str(result.metadata.get("filename") or result.source)
+
+    @classmethod
+    def _normalized_text(cls, text: str) -> str:
+        return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", " ", text.lower()).strip()
+
+    @classmethod
+    def _query_phrases(cls, question: str) -> list[str]:
+        phrases = [
+            cls._normalized_text(match.group(0))
+            for match in re.finditer(r"[A-Za-z][A-Za-z0-9'&-]*(?:\s+[A-Za-z][A-Za-z0-9'&-]*)*", question)
+        ]
+        return [phrase for phrase in phrases if phrase and (len(phrase.split()) >= 2 or len(phrase) >= 5)]
+
+    @classmethod
+    def _query_tokens(cls, question: str) -> list[str]:
+        tokens = cls._normalized_text(question).split()
+        return [token for token in tokens if len(token) >= 4]
+
+    @staticmethod
+    def _is_method_question(question: str) -> bool:
+        lowered = question.lower()
+        return any(
+            hint in question or hint in lowered
+            for hint in (
+                "方法",
+                "做法",
+                "怎么做",
+                "步骤",
+                "流程",
+                "手顺",
+                "细节",
+                "handling",
+                "method",
+                "methods",
+                "how to",
+                "how do",
+                "routine",
+            )
+        )
+
+    @classmethod
+    def _source_rank_info(cls, question: str, result: SearchResult) -> dict[str, float | bool]:
+        title = str(result.metadata.get("title") or "")
+        author = str(result.metadata.get("author") or "")
+        filename = str(result.metadata.get("filename") or result.source)
+        haystack = cls._normalized_text(" ".join([title, author, filename]))
+
+        phrases = cls._query_phrases(question)
+        tokens = cls._query_tokens(question)
+        phrase_match = any(phrase in haystack for phrase in phrases)
+        token_overlap = sum(1 for token in tokens if token in haystack)
+
+        lexical_bonus = 0.0
+        if phrase_match:
+            lexical_bonus += 0.8
+        lexical_bonus += min(token_overlap * 0.12, 0.36)
+
+        return {
+            "phrase_match": phrase_match,
+            "token_overlap": float(token_overlap),
+            "lexical_bonus": lexical_bonus,
+        }
+
+    @classmethod
+    def _select_context_results(
+        cls,
+        question: str,
+        results: list[SearchResult],
+    ) -> list[SearchResult]:
+        if not results:
+            return []
+
+        grouped = cls._merge_results_by_source(results, max_sources=None, max_snippets_per_source=1)
+        ranked = []
+        for result in grouped:
+            rank_info = cls._source_rank_info(question, result)
+            ranked.append(
+                {
+                    "key": cls._source_key(result),
+                    "adjusted_score": result.score + float(rank_info["lexical_bonus"]),
+                    "phrase_match": bool(rank_info["phrase_match"]),
+                    "token_overlap": float(rank_info["token_overlap"]),
+                }
+            )
+
+        ranked.sort(key=lambda item: item["adjusted_score"], reverse=True)
+        select_count = settings.max_context_sources
+        if ranked:
+            top = ranked[0]
+            second = ranked[1] if len(ranked) > 1 else None
+            if top["phrase_match"]:
+                if second is None or (not second["phrase_match"] and top["adjusted_score"] - second["adjusted_score"] >= 0.05):
+                    select_count = 1
+                elif cls._is_method_question(question) and top["adjusted_score"] - second["adjusted_score"] >= 0.12:
+                    select_count = 1
+            elif cls._is_method_question(question) and second is not None and top["adjusted_score"] - second["adjusted_score"] >= 0.22:
+                select_count = 1
+
+        selected_keys = {item["key"] for item in ranked[:select_count]}
+        selected_results = [result for result in results if cls._source_key(result) in selected_keys]
+        selected_results.sort(key=lambda item: item.score, reverse=True)
+        return selected_results
+
+    @classmethod
+    def _merge_chunk_ranges(cls, chunk_indexes: list[int], window: int) -> list[tuple[int, int]]:
+        if not chunk_indexes:
+            return []
+
+        ranges = sorted((max(0, index - window), index + window) for index in chunk_indexes)
+        merged = [ranges[0]]
+        for start, end in ranges[1:]:
+            last_start, last_end = merged[-1]
+            if start <= last_end + 1:
+                merged[-1] = (last_start, max(last_end, end))
+            else:
+                merged.append((start, end))
+        return merged
+
+    @classmethod
+    def _merge_results_by_source(
+        cls,
+        results: list[SearchResult],
+        *,
+        max_sources: int | None = None,
+        max_snippets_per_source: int = 3,
+    ) -> list[SearchResult]:
+        merged: dict[str, SearchResult] = {}
+        snippets_seen: dict[str, list[str]] = {}
+
+        for result in results:
+            key = cls._source_key(result)
+            snippet = result.content.strip()
+            if key not in merged:
+                merged[key] = SearchResult(
+                    source=result.source,
+                    score=result.score,
+                    content="",
+                    metadata=dict(result.metadata),
+                )
+                snippets_seen[key] = []
+
+            if snippet and snippet not in snippets_seen[key]:
+                snippets_seen[key].append(snippet)
+                collected = snippets_seen[key][:max_snippets_per_source]
+                merged[key].content = "\n\n".join(
+                    f"[Excerpt {index}] {text}"
+                    for index, text in enumerate(collected, start=1)
+                )
+
+            if result.score > merged[key].score:
+                merged[key].score = result.score
+
+        merged_results = list(merged.values())
+        merged_results.sort(key=lambda item: item.score, reverse=True)
+        if max_sources is not None:
+            return merged_results[:max_sources]
+        return merged_results
+
+    @classmethod
+    def _expand_results_with_neighbors(
+        cls,
+        results: list[SearchResult],
+    ) -> list[SearchResult]:
+        if not results:
+            return []
+
+        merged_results = cls._merge_results_by_source(
+            results,
+            max_sources=settings.max_context_sources,
+            max_snippets_per_source=settings.max_chunks_per_source,
+        )
+        expanded_results: list[SearchResult] = []
+
+        for result in merged_results:
+            source = result.source
+            raw_indexes = [
+                item.metadata.get("chunk_index")
+                for item in results
+                if item.source == source and isinstance(item.metadata.get("chunk_index"), int)
+            ]
+            chunk_indexes = sorted(set(int(index) for index in raw_indexes if index is not None))
+            ranges = cls._merge_chunk_ranges(chunk_indexes, settings.query_chunk_window)
+
+            excerpts: list[str] = []
+            for start, end in ranges:
+                for record in fetch_source_chunks(source, start, end):
+                    content = str(record.payload.get("content", "")).strip()
+                    if content and content not in excerpts:
+                        excerpts.append(content)
+                    if len(excerpts) >= settings.max_chunks_per_source:
+                        break
+                if len(excerpts) >= settings.max_chunks_per_source:
+                    break
+
+            if excerpts:
+                result.content = "\n\n".join(
+                    f"[Excerpt {index}] {text}"
+                    for index, text in enumerate(excerpts[: settings.max_chunks_per_source], start=1)
+                )
+            expanded_results.append(result)
+
+        return expanded_results
+
+    @staticmethod
     def _is_author_candidate(text: str) -> bool:
         cleaned = text.strip()
         if not cleaned or any(char.isdigit() for char in cleaned):
@@ -213,6 +421,15 @@ class RAGService:
             elif cls._is_author_candidate(right):
                 title = left or title
                 author = right
+        else:
+            stripped = re.sub(r"^\d+\s+", "", stem).strip()
+            words = stripped.split()
+            if len(words) == 4:
+                candidate_author = " ".join(words[-2:])
+                candidate_title = " ".join(words[:-2]).strip()
+                if candidate_title and cls._is_author_candidate(candidate_author):
+                    author = candidate_author
+                    title = candidate_title
 
         return {
             "filename": resolved_filename,
@@ -261,6 +478,32 @@ class RAGService:
             "\n\nTerminology guide for Chinese answers:\n"
             + "\n".join(unique_lines)
             + "\nIf one of these terms is needed, prefer the glossary wording."
+        )
+
+    @staticmethod
+    def _question_shape_guidance(question: str, language: str) -> str:
+        lowered = question.lower()
+        if any(token in question for token in ("讲了什么", "主要讲什么", "内容是什么", "总结一下")) or (
+            "what" in lowered and "about" in lowered
+        ):
+            if language == "zh":
+                return (
+                    "先用一两句话概括核心观点，再补充 3 个最重要的主题、方法或启发。"
+                    "重点讲内容本身，不要把回答写成书目信息。"
+                )
+            return (
+                "Start with a concise summary, then expand with 3 key ideas, methods, "
+                "or takeaways. Focus on the content, not bibliography."
+            )
+
+        if language == "zh":
+            return (
+                "默认给出较充实的回答：先直接回答问题，再补充 2 到 4 个关键点或例子。"
+                "不要只给一小段空泛概述。"
+            )
+        return (
+            "Give a substantive answer by default: answer directly, then add 2 to 4 key "
+            "points or examples. Avoid a thin generic paragraph."
         )
 
     async def ingest_documents(self, payload: IngestRequest) -> IngestResponse:
@@ -416,10 +659,12 @@ class RAGService:
 
         if strong_results:
             answer_language = self._language_name(payload.language)
+            selected_results = self._select_context_results(payload.question, strong_results)
+            merged_results = self._expand_results_with_neighbors(selected_results)
             generation_started = perf_counter()
             answer = await complete_chat(
                 system_prompt=(
-                    "You are a careful RAG assistant for magic performance study. "
+                    "You are a careful RAG assistant for magic teaching and performance study. "
                     "Assume the user is asking about lawful entertainment, stagecraft, "
                     "or consensual performance for magicians. Do not moralize about "
                     "magic methods. Use only the provided context and do not use "
@@ -428,6 +673,9 @@ class RAGService:
                     "Treat structured source metadata such as file, title, and author "
                     "as authoritative. If author is unknown in the context, do not "
                     "guess or substitute one. "
+                    "Do not mention internal retrieval mechanics, vector databases, file "
+                    "storage, chunking, or phrases like 'according to the file/context' "
+                    "unless the user explicitly asks about sources or system behavior. "
                     "Do not translate or rewrite proper nouns unless the translated "
                     "form is already present in the context. Never introduce a person, "
                     "book, method, or recommendation that does not appear in the "
@@ -437,18 +685,24 @@ class RAGService:
                 ),
                 user_prompt=(
                     f"Question:\n{payload.question}\n\n"
-                    f"Context:\n{self._format_context(strong_results)}\n\n"
-                    f"Write a concise answer in {answer_language} for a magician "
-                    "studying performance methods. Mention source file names when useful. "
-                    "Answer only the user's question and do not add extra recommendations "
+                    f"Context:\n{self._format_context(merged_results)}\n\n"
+                    f"Write a direct, natural answer in {answer_language} for a magician "
+                    "studying performance methods. The UI already shows the references "
+                    "below the answer, so do not mention raw file names, internal files, "
+                    "or say 'according to the file/context/database'. Answer only the "
+                    "user's question and do not add extra recommendations "
                     "or related people unless explicitly asked. Do not invent or substitute "
                     "a different author, title, or book. If the context names the source "
                     "file, title, or author, prefer those exact values. If the context does "
                     "not provide an author, say that the provided excerpt does not identify "
                     "the author instead of guessing. If the answer language is Chinese, "
                     "use natural, idiomatic Simplified Chinese instead of literal translation, "
-                    "but keep names and titles exactly as they appear in the context."
-                    f"{self._relevant_term_guide(payload.language, payload.question, strong_results)}"
+                    "but keep names and titles exactly as they appear in the context. "
+                    "When the context contains method steps, procedure details, or handling "
+                    "nuance, include those practical details instead of only giving a high-level summary. "
+                    "The context may be long because this is a magic teaching workflow; extract the most useful details and explain them clearly."
+                    f"\n\nStyle guidance:\n{self._question_shape_guidance(payload.question, payload.language)}"
+                    f"{self._relevant_term_guide(payload.language, payload.question, merged_results)}"
                 ),
             )
             generation_time_ms = int((perf_counter() - generation_started) * 1000)
@@ -457,7 +711,7 @@ class RAGService:
                 answer=answer.strip(),
                 used_rag=True,
                 fallback_used=False,
-                sources=strong_results,
+                sources=merged_results,
                 embedding_time_ms=embedding_time_ms,
                 vector_search_time_ms=vector_search_time_ms,
                 retrieval_time_ms=retrieval_time_ms,

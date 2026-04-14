@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     score_threshold: float = 0.45
     chunk_size: int = 400
     chunk_overlap: int = 60
+    query_chunk_window: int = 2
+    max_context_sources: int = 3
+    max_chunks_per_source: int = 6
 
 
 @lru_cache(maxsize=1)

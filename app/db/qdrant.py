@@ -4,6 +4,7 @@ from functools import lru_cache
 from typing import Any
 
 from qdrant_client import QdrantClient
+from qdrant_client.http.exceptions import UnexpectedResponse
 from qdrant_client.models import (
     Distance,
     FieldCondition,
@@ -11,6 +12,7 @@ from qdrant_client.models import (
     MatchValue,
     PayloadSchemaType,
     PointStruct,
+    Range,
     VectorParams,
 )
 
@@ -39,6 +41,12 @@ def ensure_collection(force_recreate: bool = False) -> None:
             field_schema=PayloadSchemaType.KEYWORD,
             wait=True,
         )
+        client.create_payload_index(
+            collection_name=settings.qdrant_collection_name,
+            field_name="chunk_index",
+            field_schema=PayloadSchemaType.INTEGER,
+            wait=True,
+        )
         return
 
     client.create_collection(
@@ -52,6 +60,12 @@ def ensure_collection(force_recreate: bool = False) -> None:
         collection_name=settings.qdrant_collection_name,
         field_name="source",
         field_schema=PayloadSchemaType.KEYWORD,
+        wait=True,
+    )
+    client.create_payload_index(
+        collection_name=settings.qdrant_collection_name,
+        field_name="chunk_index",
+        field_schema=PayloadSchemaType.INTEGER,
         wait=True,
     )
 
@@ -107,3 +121,68 @@ def count_points_for_source(source: str) -> int:
         ),
         exact=True,
     ).count
+
+
+def fetch_source_chunks(source: str, start_chunk: int, end_chunk: int) -> list[Any]:
+    """Fetch a contiguous chunk window for one source file."""
+    if not get_qdrant_client().collection_exists(settings.qdrant_collection_name):
+        return []
+
+    client = get_qdrant_client()
+    limit = max(1, end_chunk - start_chunk + 1)
+    filtered_records: list[Any]
+
+    try:
+        filtered_records, _ = client.scroll(
+            collection_name=settings.qdrant_collection_name,
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(
+                        key="source",
+                        match=MatchValue(value=source),
+                    ),
+                    FieldCondition(
+                        key="chunk_index",
+                        range=Range(gte=start_chunk, lte=end_chunk),
+                    ),
+                ]
+            ),
+            limit=limit,
+            with_payload=True,
+            with_vectors=False,
+        )
+    except UnexpectedResponse as exc:
+        if "Index required but not found" not in str(exc):
+            raise
+
+        # Older collections may not have a chunk_index payload index yet.
+        # Fall back to scrolling by source and filtering chunk_index in Python.
+        filtered_records = []
+        offset = None
+        while True:
+            records, offset = client.scroll(
+                collection_name=settings.qdrant_collection_name,
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="source",
+                            match=MatchValue(value=source),
+                        )
+                    ]
+                ),
+                limit=128,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for record in records:
+                chunk_index = int(record.payload.get("chunk_index", -1))
+                if start_chunk <= chunk_index <= end_chunk:
+                    filtered_records.append(record)
+            if offset is None:
+                break
+
+    return sorted(
+        filtered_records,
+        key=lambda record: int(record.payload.get("chunk_index", 0)),
+    )

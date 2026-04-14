@@ -349,10 +349,10 @@
 
     .source-head {
       display: flex;
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 2px;
+      align-items: center;
+      gap: 8px;
       min-width: 0;
+      flex-wrap: wrap;
     }
 
     .source-title {
@@ -360,10 +360,15 @@
       font-weight: 600;
     }
 
-    .source-author,
-    .source-filename {
+    .source-author {
       color: var(--muted);
       font-size: 12px;
+    }
+
+    .source-author::before {
+      content: "·";
+      margin-right: 8px;
+      color: rgba(201, 168, 76, 0.75);
     }
 
     .source-toggle {
@@ -889,7 +894,6 @@
           '<span class="source-head">',
           '<span class="source-title">' + escapeHtml(reference.title) + "</span>",
           '<span class="source-author">' + escapeHtml(reference.author) + "</span>",
-          '<span class="source-filename">' + escapeHtml(reference.filename) + "</span>",
           "</span>",
           '<span class="source-toggle">+</span>',
           "</button>",

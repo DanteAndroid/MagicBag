@@ -87,6 +87,15 @@ async def test_semantic_search_extracts_reference_metadata(monkeypatch: pytest.M
     assert result.results[0].metadata["author"] == "Darwin Ortiz"
 
 
+def test_reference_metadata_extracts_numbered_title_and_author() -> None:
+    metadata = RAGService._reference_metadata(
+        "/tmp/48 Which Hand Fraser Parker.md",
+        "48 Which Hand Fraser Parker.md",
+    )
+    assert metadata["title"] == "Which Hand"
+    assert metadata["author"] == "Fraser Parker"
+
+
 @pytest.mark.asyncio
 async def test_semantic_search_expands_glossary_terms(monkeypatch: pytest.MonkeyPatch) -> None:
     captured = {}
@@ -109,6 +118,19 @@ async def test_semantic_search_expands_glossary_terms(monkeypatch: pytest.Monkey
 @pytest.mark.asyncio
 async def test_answer_question_uses_rag_context(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
+        "app.services.rag_service.fetch_source_chunks",
+        lambda source, start, end: [
+            _Point(
+                score=0.0,
+                payload={"chunk_index": 0, "content": "alpha beta gamma"},
+            ),
+            _Point(
+                score=0.0,
+                payload={"chunk_index": 1, "content": "delta epsilon zeta"},
+            ),
+        ],
+    )
+    monkeypatch.setattr(
         RAGService,
         "_semantic_search_with_timings",
         lambda self, payload: _search_response_with_timings(),
@@ -122,6 +144,9 @@ async def test_answer_question_uses_rag_context(monkeypatch: pytest.MonkeyPatch)
     assert result.used_rag is True
     assert result.fallback_used is False
     assert result.answer == "rag answer"
+    assert len(result.sources) == 1
+    assert "[Excerpt 1]" in result.sources[0].content
+    assert "[Excerpt 2]" in result.sources[0].content
     assert result.embedding_time_ms is not None
     assert result.vector_search_time_ms is not None
     assert result.retrieval_time_ms is not None
@@ -152,6 +177,70 @@ async def test_answer_question_falls_back_without_hits(monkeypatch: pytest.Monke
     assert result.total_time_ms is not None
 
 
+def test_expand_results_with_neighbors_pulls_adjacent_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.services.rag_service.settings.query_chunk_window", 1)
+    monkeypatch.setattr("app.services.rag_service.settings.max_context_sources", 2)
+    monkeypatch.setattr("app.services.rag_service.settings.max_chunks_per_source", 4)
+    monkeypatch.setattr(
+        "app.services.rag_service.fetch_source_chunks",
+        lambda source, start, end: [
+            _Point(score=0.0, payload={"chunk_index": 4, "content": "before"}),
+            _Point(score=0.0, payload={"chunk_index": 5, "content": "hit"}),
+            _Point(score=0.0, payload={"chunk_index": 6, "content": "after"}),
+        ],
+    )
+
+    expanded = RAGService._expand_results_with_neighbors(
+        [
+            _result("Manual of Mystery - Jane Doe.txt", 5, "hit", 0.92),
+            _result("Manual of Mystery - Jane Doe.txt", 6, "after", 0.88),
+        ]
+    )
+
+    assert len(expanded) == 1
+    assert expanded[0].metadata["title"] == "Manual of Mystery"
+    assert expanded[0].metadata["author"] == "Jane Doe"
+    assert "[Excerpt 1] before" in expanded[0].content
+    assert "[Excerpt 2] hit" in expanded[0].content
+    assert "[Excerpt 3] after" in expanded[0].content
+
+
+def test_select_context_results_prefers_named_method_source() -> None:
+    selected = RAGService._select_context_results(
+        "which hand 的方法",
+        [
+            _search_result(
+                "48 Which Hand Fraser Parker.md",
+                0,
+                "which hand core method",
+                0.68,
+                title="Which Hand",
+                author="Fraser Parker",
+            ),
+            _search_result(
+                "Corinda’s 13 Steps to Mentalism (1968).txt",
+                3037,
+                "borrowed paper and cards",
+                0.67,
+                title="Corinda’s 13 Steps to Mentalism (1968)",
+                author=None,
+            ),
+            _search_result(
+                "Darwin Ortiz - Strong Magic.txt",
+                2182,
+                "timing and shuttle pass",
+                0.65,
+                title="Strong Magic",
+                author="Darwin Ortiz",
+            ),
+        ],
+    )
+
+    assert len(selected) == 1
+    assert selected[0].metadata["title"] == "Which Hand"
+    assert selected[0].metadata["author"] == "Fraser Parker"
+
+
 async def _embed(texts: list[str]) -> list[list[float]]:
     return [[float(len(text)), 0.0, 1.0] for text in texts]
 
@@ -178,7 +267,18 @@ async def _search_response():
                     "title": "Strong Magic",
                     "author": "Darwin Ortiz",
                 },
-            )
+            ),
+            SearchResult(
+                source="/tmp/note.md",
+                score=0.87,
+                content="delta epsilon zeta",
+                metadata={
+                    "filename": "Darwin Ortiz - Strong Magic.txt",
+                    "chunk_index": 1,
+                    "title": "Strong Magic",
+                    "author": "Darwin Ortiz",
+                },
+            ),
         ],
     )
 
@@ -197,13 +297,58 @@ async def _empty_search_response_with_timings():
     return await _empty_search_response(), 12, 34
 
 
+def _result(filename: str, chunk_index: int, content: str, score: float):
+    from app.schemas.rag import SearchResult
+
+    return SearchResult(
+        source=f"/tmp/{filename}",
+        score=score,
+        content=content,
+        metadata={
+            "filename": filename,
+            "chunk_index": chunk_index,
+            "title": "Manual of Mystery",
+            "author": "Jane Doe",
+        },
+    )
+
+
+def _search_result(
+    filename: str,
+    chunk_index: int,
+    content: str,
+    score: float,
+    *,
+    title: str,
+    author: str | None,
+):
+    from app.schemas.rag import SearchResult
+
+    return SearchResult(
+        source=f"/tmp/{filename}",
+        score=score,
+        content=content,
+        metadata={
+            "filename": filename,
+            "chunk_index": chunk_index,
+            "title": title,
+            "author": author,
+        },
+    )
+
+
 async def _complete_chat(system_prompt: str, user_prompt: str) -> str:
     assert "Context:" in user_prompt
     assert "do not use outside knowledge" in system_prompt.lower()
     assert "never introduce a person" in system_prompt.lower()
+    assert "according to the file" in system_prompt.lower()
+    assert "magic teaching" in system_prompt.lower()
     assert "author: Darwin Ortiz" in user_prompt
     assert "title: Strong Magic" in user_prompt
+    assert "[Excerpt 1] alpha beta gamma" in user_prompt
+    assert "[Excerpt 2] delta epsilon zeta" in user_prompt
     assert "do not guess or substitute one" in system_prompt.lower()
+    assert "ui already shows the references" in user_prompt.lower()
     assert "do not add extra recommendations" in user_prompt.lower()
     assert "natural, idiomatic simplified chinese" in user_prompt.lower()
     assert "do not invent or substitute a different author" in user_prompt.lower()
