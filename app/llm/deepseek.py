@@ -32,13 +32,34 @@ async def complete_chat(
     max_tokens: int | None = None,
 ) -> str:
     """Generate a non-streaming chat completion."""
-    response = await get_deepseek_client().chat.completions.create(
-        model=settings.deepseek_chat_model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.0,
-        max_tokens=max_tokens,
-    )
-    return response.choices[0].message.content or ""
+    client = get_deepseek_client()
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    answer_parts: list[str] = []
+
+    for _ in range(4):
+        response = await client.chat.completions.create(
+            model=settings.deepseek_chat_model,
+            messages=messages,
+            temperature=0.0,
+            max_tokens=max_tokens,
+        )
+        choice = response.choices[0]
+        chunk = choice.message.content or ""
+        if chunk:
+            answer_parts.append(chunk)
+            messages.append({"role": "assistant", "content": chunk})
+
+        if choice.finish_reason != "length":
+            break
+
+        messages.append(
+            {
+                "role": "user",
+                "content": "Continue from exactly where you stopped. Do not repeat previous content.",
+            }
+        )
+
+    return "".join(answer_parts).strip()

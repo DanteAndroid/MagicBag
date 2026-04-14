@@ -789,14 +789,14 @@ class RAGService:
     @classmethod
     def _max_answer_tokens(cls, question: str, history: list[ChatTurn]) -> int:
         if cls._wants_multiple_items(question) and cls._is_method_question(question):
-            return 900
+            return 1800
         if cls._is_method_question(question):
-            return 700
+            return 1400
         if cls._is_summary_question(question):
-            return 620
+            return 1000
         if cls._should_use_history(question, history):
-            return 420
-        return 520
+            return 800
+        return 900
 
     async def ingest_documents(self, payload: IngestRequest) -> IngestResponse:
         """Read source documents, generate embeddings, and upsert vectors."""
@@ -1048,7 +1048,7 @@ class RAGService:
             user_prompt="\n\n".join(
                 part for part in [self._history_text(payload.history), f"Question:\n{payload.question}"] if part
             ),
-            max_tokens=360,
+            max_tokens=600,
         )
         generation_time_ms = int((perf_counter() - generation_started) * 1000)
         return QueryResponse(

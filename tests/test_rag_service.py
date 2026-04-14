@@ -534,5 +534,5 @@ def test_term_guide_for_chinese() -> None:
 
 
 async def _fallback_chat(system_prompt: str, user_prompt: str, max_tokens: int | None = None) -> str:
-    assert max_tokens == 360
+    assert max_tokens == 600
     return "fallback answer"

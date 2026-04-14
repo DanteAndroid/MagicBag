@@ -241,8 +241,10 @@
       border-radius: 999px;
       background: rgba(255, 255, 255, 0.04);
       color: var(--muted);
-      padding: 7px 12px;
-      font: 12px/1 system-ui, sans-serif;
+      width: 32px;
+      height: 32px;
+      padding: 0;
+      font: 16px/1 system-ui, sans-serif;
       cursor: pointer;
       transition: background 140ms ease, color 140ms ease;
     }
@@ -587,17 +589,16 @@
         emptyDesc: "",
         inputPlaceholder: "问一个关于手法、流程或表演理论的问题……",
         send: "发送",
-        copy: "复制",
-        copied: "已复制",
-        copyFailed: "失败",
-        retry: "重试",
+        copyLabel: "复制",
+        copiedLabel: "已复制",
+        copyFailedLabel: "复制失败",
+        retryLabel: "重试",
         noAnswer: "没有返回回答。",
         noSnippet: "暂无原文片段。",
         sourceLabel: "来源",
         unknownAuthor: "作者未标注",
         error: "无法连接到魔法口袋，请检查部署状态、接口地址或跨域配置。",
-        loadingStatus: "请求已发送，正在检索资料并生成回答…",
-        loadingElapsed: "已等待 {seconds}s",
+        loadingThinking: "思考中…… {seconds}s",
         totalTime: "总耗时 {seconds}s",
         timingBreakdown: "Embedding {embedding}s · 检索 {vector}s · 生成 {generation}s",
         examples: [
@@ -616,17 +617,16 @@
         emptyDesc: "",
         inputPlaceholder: "Ask about a sleight, routine, or performance principle...",
         send: "Send",
-        copy: "Copy",
-        copied: "Copied",
-        copyFailed: "Failed",
-        retry: "Retry",
+        copyLabel: "Copy",
+        copiedLabel: "Copied",
+        copyFailedLabel: "Copy failed",
+        retryLabel: "Retry",
         noAnswer: "No answer returned.",
         noSnippet: "No snippet available.",
         sourceLabel: "Source",
         unknownAuthor: "Author not listed",
         error: "Unable to reach MagicBag. Check the deployment, API endpoint, or CORS configuration.",
-        loadingStatus: "Request sent. Retrieving context and generating an answer…",
-        loadingElapsed: "Waiting {seconds}s",
+        loadingThinking: "Thinking... {seconds}s",
         totalTime: "Total {seconds}s",
         timingBreakdown: "Embedding {embedding}s · Search {vector}s · Generation {generation}s",
         examples: [
@@ -815,6 +815,21 @@
       return (ms / 1000).toFixed(ms >= 10000 ? 0 : 1);
     }
 
+    function formatElapsedSeconds(ms) {
+      if (typeof ms !== "number" || Number.isNaN(ms)) return "0";
+      return String(Math.floor(ms / 1000));
+    }
+
+    function startThinkingTicker(node, startedAt) {
+      const tick = () => {
+        node.textContent = formatText(t("loadingThinking"), {
+          seconds: formatElapsedSeconds(Date.now() - startedAt)
+        });
+      };
+      tick();
+      return window.setInterval(tick, 900);
+    }
+
     function createLoadingMessage() {
       loadingNode = createMessage(
         "assistant",
@@ -822,28 +837,15 @@
           '<div class="answer-card">',
           '<div class="answer-body">',
           '<div class="typing"><span></span><span></span><span></span></div>',
-          '<div class="loading-meta">',
-          '<div class="loading-state"></div>',
-          '<div class="loading-elapsed"></div>',
-          "</div>",
+          '<div class="loading-meta"><div class="loading-thinking"></div></div>',
           "</div>",
           "</div>"
         ].join("")
       );
       loadingStartedAt = Date.now();
 
-      const stateNode = loadingNode.querySelector(".loading-state");
-      const elapsedNode = loadingNode.querySelector(".loading-elapsed");
-      const tick = () => {
-        if (!loadingNode) return;
-        stateNode.textContent = t("loadingStatus");
-        elapsedNode.textContent = formatText(t("loadingElapsed"), {
-          seconds: formatSeconds(Date.now() - loadingStartedAt)
-        });
-      };
-
-      tick();
-      loadingTimer = window.setInterval(tick, 900);
+      const thinkingNode = loadingNode.querySelector(".loading-thinking");
+      loadingTimer = startThinkingTicker(thinkingNode, loadingStartedAt);
     }
 
     function removeLoadingMessage() {
@@ -918,25 +920,47 @@
       return '<div class="sources">' + items + "</div>";
     }
 
-    async function streamAssistantMessage(question, answer, sources, timing) {
-      const card = createMessage(
-        "assistant",
-        [
-          '<div class="assistant-shell">',
-          '<div class="answer-card">',
-          '<div class="answer-body"></div>',
-          buildSources(sources),
-          "</div>",
-          '<div class="answer-meta-row">',
-          '<div class="answer-timing"></div>',
-          '<div class="answer-tools">',
-          '<button class="tool-btn retry-btn" type="button">' + escapeHtml(t("retry")) + "</button>",
-          '<button class="tool-btn copy-btn" type="button">' + escapeHtml(t("copy")) + "</button>",
-          "</div>",
-          "</div>",
-          "</div>"
-        ].join("")
-      );
+    function buildAssistantShell(sources) {
+      return [
+        '<div class="assistant-shell">',
+        '<div class="answer-card">',
+        '<div class="answer-body"></div>',
+        buildSources(sources),
+        "</div>",
+        '<div class="answer-meta-row">',
+        '<div class="answer-timing"></div>',
+        '<div class="answer-tools">',
+        '<button class="tool-btn retry-btn" type="button" aria-label="' + escapeHtml(t("retryLabel")) + '" title="' + escapeHtml(t("retryLabel")) + '">↻</button>',
+        '<button class="tool-btn copy-btn" type="button" aria-label="' + escapeHtml(t("copyLabel")) + '" title="' + escapeHtml(t("copyLabel")) + '">⧉</button>',
+        "</div>",
+        "</div>",
+        "</div>"
+      ].join("");
+    }
+
+    function replaceMessageWithThinking(messageNode) {
+      messageNode.innerHTML = [
+        '<div class="assistant-shell">',
+        '<div class="answer-card">',
+        '<div class="answer-body">',
+        '<div class="typing"><span></span><span></span><span></span></div>',
+        '<div class="loading-meta"><div class="loading-thinking"></div></div>',
+        "</div>",
+        "</div>",
+        "</div>"
+      ].join("");
+      const thinkingNode = messageNode.querySelector(".loading-thinking");
+      const timer = startThinkingTicker(thinkingNode, Date.now());
+      return () => clearInterval(timer);
+    }
+
+    async function streamAssistantMessage(question, answer, sources, timing, options = {}) {
+      const { targetMessage = null, replaceLastAssistantHistory = false } = options;
+      const card = targetMessage || createMessage("assistant", buildAssistantShell(sources));
+      if (targetMessage) {
+        card.innerHTML = buildAssistantShell(sources);
+        scrollToBottom();
+      }
 
       const body = card.querySelector(".answer-body");
       const copyButton = card.querySelector(".copy-btn");
@@ -956,6 +980,12 @@
 
       copyButton.disabled = false;
       retryButton.disabled = false;
+      const setCopyButtonLabel = (label) => {
+        copyButton.setAttribute("title", label);
+        copyButton.setAttribute("aria-label", label);
+      };
+      setCopyButtonLabel(t("copyLabel"));
+
       const totalTimeText = formatText(t("totalTime"), {
         seconds: formatSeconds(timing?.totalTimeMs ?? 0)
       });
@@ -975,19 +1005,20 @@
       copyButton.addEventListener("click", async () => {
         try {
           await navigator.clipboard.writeText(answer);
-          copyButton.textContent = t("copied");
+          setCopyButtonLabel(t("copiedLabel"));
           setTimeout(() => {
-            copyButton.textContent = t("copy");
+            setCopyButtonLabel(t("copyLabel"));
           }, 1200);
         } catch {
-          copyButton.textContent = t("copyFailed");
+          setCopyButtonLabel(t("copyFailedLabel"));
           setTimeout(() => {
-            copyButton.textContent = t("copy");
+            setCopyButtonLabel(t("copyLabel"));
           }, 1200);
         }
       });
+
       retryButton.addEventListener("click", () => {
-        ask(question);
+        ask(question, { retryTarget: card });
       });
 
       card.querySelectorAll(".source-chip").forEach((chip) => {
@@ -998,6 +1029,13 @@
         });
       });
 
+      if (replaceLastAssistantHistory && conversationHistory.length) {
+        const last = conversationHistory[conversationHistory.length - 1];
+        if (last.role === "assistant") {
+          last.content = answer.trim();
+          return;
+        }
+      }
       appendHistory("assistant", answer);
     }
 
@@ -1008,17 +1046,25 @@
       );
     }
 
-    async function ask(question) {
+    async function ask(question, options = {}) {
+      const { retryTarget = null } = options;
       const trimmed = question.trim();
       if (!trimmed) return;
 
-      createUserMessage(trimmed);
-      appendHistory("user", trimmed);
+      if (!retryTarget) {
+        createUserMessage(trimmed);
+        appendHistory("user", trimmed);
+      }
       input.value = "";
       autoResize();
       input.focus();
       sendButton.disabled = true;
-      createLoadingMessage();
+      let stopInlineThinking = null;
+      if (retryTarget) {
+        stopInlineThinking = replaceMessageWithThinking(retryTarget);
+      } else {
+        createLoadingMessage();
+      }
       const requestStartedAt = performance.now();
 
       try {
@@ -1040,7 +1086,11 @@
         }
 
         const data = await response.json();
-        removeLoadingMessage();
+        if (stopInlineThinking) {
+          stopInlineThinking();
+        } else {
+          removeLoadingMessage();
+        }
 
         const answer = data.answer || (Array.isArray(data.results) && data.results.length
           ? data.results.map((item) => "- " + (item.content || "")).join("\n")
@@ -1054,10 +1104,18 @@
           vectorSearchTimeMs: data.vector_search_time_ms,
           retrievalTimeMs: data.retrieval_time_ms,
           generationTimeMs: data.generation_time_ms
+        }, {
+          targetMessage: retryTarget,
+          replaceLastAssistantHistory: Boolean(retryTarget)
         });
       } catch (error) {
-        removeLoadingMessage();
-        createErrorMessage(t("error"));
+        if (stopInlineThinking) {
+          stopInlineThinking();
+          retryTarget.innerHTML = '<div class="answer-card"><div class="answer-body error"><p>' + escapeHtml(t("error")) + "</p></div></div>";
+        } else {
+          removeLoadingMessage();
+          createErrorMessage(t("error"));
+        }
         console.error(error);
       } finally {
         sendButton.disabled = false;
