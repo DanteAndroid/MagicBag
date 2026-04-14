@@ -23,6 +23,7 @@ from app.db.qdrant import (
 )
 from app.llm.deepseek import complete_chat, embed_texts
 from app.schemas.rag import (
+    ChatTurn,
     IngestRequest,
     IngestResponse,
     QueryRequest,
@@ -32,11 +33,13 @@ from app.schemas.rag import (
     SearchResult,
 )
 from app.schemas.stats import StatsResponse
-from app.services.document_loader import chunk_document, discover_documents
+from app.services.document_loader import chunk_document, discover_documents, split_into_sentences
 
 
 class RAGService:
     """Service object for RAG workflows."""
+
+    MAX_HISTORY_TURNS = 5
 
     QUERY_SYNONYMS = {
         "迫选": "Force",
@@ -196,6 +199,15 @@ class RAGService:
         tokens = cls._normalized_text(question).split()
         return [token for token in tokens if len(token) >= 4]
 
+    @classmethod
+    def _focus_text(cls, question: str, history: list[ChatTurn]) -> str:
+        recent_user_turns = [
+            turn.content.strip()
+            for turn in history[-(cls.MAX_HISTORY_TURNS * 2) :]
+            if turn.role == "user" and turn.content.strip()
+        ]
+        return "\n".join([*recent_user_turns[-2:], question])
+
     @staticmethod
     def _is_method_question(question: str) -> bool:
         lowered = question.lower()
@@ -215,6 +227,43 @@ class RAGService:
                 "how to",
                 "how do",
                 "routine",
+            )
+        )
+
+    @staticmethod
+    def _is_summary_question(question: str) -> bool:
+        lowered = question.lower()
+        return any(
+            hint in question or hint in lowered
+            for hint in (
+                "讲了什么",
+                "主要讲什么",
+                "内容是什么",
+                "总结",
+                "概述",
+                "what is it about",
+                "what's it about",
+                "about what",
+            )
+        )
+
+    @staticmethod
+    def _is_followup_question(question: str) -> bool:
+        lowered = question.lower().strip()
+        return any(
+            hint in question or hint in lowered
+            for hint in (
+                "它",
+                "这本书",
+                "这个方法",
+                "这个流程",
+                "这里面",
+                "那",
+                "那它",
+                "那这",
+                "what about",
+                "how about",
+                "and what",
             )
         )
 
@@ -246,14 +295,17 @@ class RAGService:
         cls,
         question: str,
         results: list[SearchResult],
+        history: list[ChatTurn] | None = None,
     ) -> list[SearchResult]:
         if not results:
             return []
 
+        history = history or []
+        focus_text = cls._focus_text(question, history)
         grouped = cls._merge_results_by_source(results, max_sources=None, max_snippets_per_source=1)
         ranked = []
         for result in grouped:
-            rank_info = cls._source_rank_info(question, result)
+            rank_info = cls._source_rank_info(focus_text, result)
             ranked.append(
                 {
                     "key": cls._source_key(result),
@@ -272,6 +324,8 @@ class RAGService:
                 if second is None or (not second["phrase_match"] and top["adjusted_score"] - second["adjusted_score"] >= 0.05):
                     select_count = 1
                 elif cls._is_method_question(question) and top["adjusted_score"] - second["adjusted_score"] >= 0.12:
+                    select_count = 1
+                elif history and cls._is_followup_question(question) and top["adjusted_score"] - second["adjusted_score"] >= 0.04:
                     select_count = 1
             elif cls._is_method_question(question) and second is not None and top["adjusted_score"] - second["adjusted_score"] >= 0.22:
                 select_count = 1
@@ -380,6 +434,76 @@ class RAGService:
             expanded_results.append(result)
 
         return expanded_results
+
+    @classmethod
+    def _compress_results_for_prompt(
+        cls,
+        question: str,
+        history: list[ChatTurn],
+        results: list[SearchResult],
+    ) -> list[SearchResult]:
+        if not results:
+            return []
+
+        focus_text = cls._focus_text(question, history)
+        focus_tokens = cls._query_tokens(focus_text)
+        focus_phrases = cls._query_phrases(focus_text)
+
+        if cls._is_method_question(question):
+            max_sentences = 10
+            max_chars = 1800
+        elif cls._is_summary_question(question):
+            max_sentences = 8
+            max_chars = 1500
+        elif history and cls._is_followup_question(question):
+            max_sentences = 6
+            max_chars = 900
+        else:
+            max_sentences = 7
+            max_chars = 1200
+
+        compressed_results: list[SearchResult] = []
+        for result in results:
+            raw_sentences = split_into_sentences(result.content.replace("[Excerpt", "\n[Excerpt"))
+            if not raw_sentences:
+                compressed_results.append(result)
+                continue
+
+            scored_sentences: list[tuple[int, int, str]] = []
+            for index, sentence in enumerate(raw_sentences):
+                cleaned = re.sub(r"^\[Excerpt\s+\d+\]\s*", "", sentence).strip()
+                haystack = cls._normalized_text(cleaned)
+                token_hits = sum(1 for token in focus_tokens if token in haystack)
+                phrase_hit = any(phrase in haystack for phrase in focus_phrases)
+                score = token_hits * 2 + (3 if phrase_hit else 0)
+                if index < 2:
+                    score += 1
+                scored_sentences.append((score, index, cleaned))
+
+            scored_sentences.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+            chosen = sorted(scored_sentences[:max_sentences], key=lambda item: item[1])
+
+            content_parts: list[str] = []
+            current_chars = 0
+            for _, _, sentence in chosen:
+                if not sentence or sentence in content_parts:
+                    continue
+                addition = len(sentence) + (2 if content_parts else 0)
+                if content_parts and current_chars + addition > max_chars:
+                    break
+                content_parts.append(sentence)
+                current_chars += addition
+
+            compressed_results.append(
+                SearchResult(
+                    source=result.source,
+                    score=result.score,
+                    content="\n\n".join(content_parts) if content_parts else result.content,
+                    metadata=dict(result.metadata),
+                )
+            )
+
+        return compressed_results
 
     @staticmethod
     def _is_author_candidate(text: str) -> bool:
@@ -506,6 +630,90 @@ class RAGService:
             "points or examples. Avoid a thin generic paragraph."
         )
 
+    @classmethod
+    def _history_text(cls, history: list[ChatTurn]) -> str:
+        if not history:
+            return ""
+
+        recent_turns = history[-(cls.MAX_HISTORY_TURNS * 2) :]
+        lines = [
+            f"{'User' if turn.role == 'user' else 'Assistant'}: {turn.content.strip()}"
+            for turn in recent_turns
+            if turn.content.strip()
+        ]
+        if not lines:
+            return ""
+        return "Recent conversation:\n" + "\n".join(lines)
+
+    @classmethod
+    def _build_search_query(cls, question: str, history: list[ChatTurn]) -> str:
+        recent_user_turns = [
+            turn.content.strip()
+            for turn in history[-(cls.MAX_HISTORY_TURNS * 2) :]
+            if turn.role == "user" and turn.content.strip()
+        ]
+        if not recent_user_turns:
+            return question
+
+        search_context = "\n".join(recent_user_turns[-2:])
+        return f"{search_context}\nCurrent question: {question}"
+
+    @classmethod
+    def _answer_guidance(cls, question: str, language: str, history: list[ChatTurn]) -> str:
+        followup_note = ""
+        if history and cls._is_followup_question(question):
+            followup_note = (
+                "Use the recent conversation to resolve references like 'it', 'this book', "
+                "or 'that method' before answering.\n"
+            )
+
+        if cls._is_method_question(question):
+            if language == "zh":
+                return (
+                    followup_note
+                    + "完整回答这个方法题。优先讲清：目标效果、准备条件、基本流程、关键细节、观众体验，"
+                    "以及上下文里明确出现的限制或优点。不要只给高层概述。"
+                )
+            return (
+                followup_note
+                + "Answer this method question completely. Explain the effect, setup, flow, key details, "
+                "audience experience, and any limitations or advantages stated in the context."
+            )
+
+        if cls._is_summary_question(question):
+            if language == "zh":
+                return (
+                    followup_note
+                    + "完整回答这类概述题：先说明核心主张，再展开至少 3 个更具体的观点、方法或判断。"
+                    "不要只写空泛简介。"
+                )
+            return (
+                followup_note
+                + "Answer this summary question completely: state the central thesis first, then expand "
+                "with at least 3 concrete ideas, methods, or judgments from the context."
+            )
+
+        if language == "zh":
+            return (
+                followup_note
+                + "完整回答，不要敷衍。把上下文中的相关信息整合成一个有帮助的答案，不要让用户再去读来源。"
+            )
+        return (
+            followup_note
+            + "Answer completely and helpfully. Synthesize the relevant context into a direct answer "
+            "instead of sending the user back to the sources."
+        )
+
+    @classmethod
+    def _max_answer_tokens(cls, question: str, history: list[ChatTurn]) -> int:
+        if cls._is_method_question(question):
+            return 700
+        if cls._is_summary_question(question):
+            return 620
+        if history and cls._is_followup_question(question):
+            return 420
+        return 520
+
     async def ingest_documents(self, payload: IngestRequest) -> IngestResponse:
         """Read source documents, generate embeddings, and upsert vectors."""
         error = self._require_ingest_dependencies()
@@ -593,7 +801,17 @@ class RAGService:
     async def semantic_search(self, payload: SearchRequest) -> SearchResponse:
         """Run semantic retrieval."""
         search_response, _, _ = await self._semantic_search_with_timings(payload)
-        return search_response
+        if not payload.debug:
+            return search_response
+
+        selected_results = self._select_context_results(payload.query, search_response.results)
+        expanded_results = self._expand_results_with_neighbors(selected_results)
+        return SearchResponse(
+            query=search_response.query,
+            results=search_response.results,
+            selected_results=selected_results,
+            expanded_results=expanded_results,
+        )
 
     async def _semantic_search_with_timings(
         self,
@@ -646,7 +864,7 @@ class RAGService:
         request_started = perf_counter()
         search_response, embedding_time_ms, vector_search_time_ms = await self._semantic_search_with_timings(
             SearchRequest(
-                query=payload.question,
+                query=self._build_search_query(payload.question, payload.history),
                 top_k=payload.top_k or settings.top_k,
             )
         )
@@ -659,8 +877,13 @@ class RAGService:
 
         if strong_results:
             answer_language = self._language_name(payload.language)
-            selected_results = self._select_context_results(payload.question, strong_results)
-            merged_results = self._expand_results_with_neighbors(selected_results)
+            selected_results = self._select_context_results(payload.question, strong_results, payload.history)
+            expanded_results = self._expand_results_with_neighbors(selected_results)
+            merged_results = self._compress_results_for_prompt(
+                payload.question,
+                payload.history,
+                expanded_results,
+            )
             generation_started = perf_counter()
             answer = await complete_chat(
                 system_prompt=(
@@ -681,10 +904,15 @@ class RAGService:
                     "book, method, or recommendation that does not appear in the "
                     "context. Never merge two different names into one. If your prior "
                     "knowledge conflicts with the context, trust the context. If the "
-                    "context is insufficient, say that directly."
+                    "context is insufficient, say that directly. Answer the question "
+                    "completely and in detail based on the provided context. Never tell "
+                    "the user to read the source; synthesize the information and answer directly. "
+                    "If the context contains partial information across multiple passages, combine "
+                    "the relevant pieces into one coherent answer."
                 ),
                 user_prompt=(
                     f"Question:\n{payload.question}\n\n"
+                    f"{self._history_text(payload.history)}\n\n"
                     f"Context:\n{self._format_context(merged_results)}\n\n"
                     f"Write a direct, natural answer in {answer_language} for a magician "
                     "studying performance methods. The UI already shows the references "
@@ -701,9 +929,11 @@ class RAGService:
                     "When the context contains method steps, procedure details, or handling "
                     "nuance, include those practical details instead of only giving a high-level summary. "
                     "The context may be long because this is a magic teaching workflow; extract the most useful details and explain them clearly."
+                    f"\n\nAnswer guidance:\n{self._answer_guidance(payload.question, payload.language, payload.history)}"
                     f"\n\nStyle guidance:\n{self._question_shape_guidance(payload.question, payload.language)}"
                     f"{self._relevant_term_guide(payload.language, payload.question, merged_results)}"
                 ),
+                max_tokens=self._max_answer_tokens(payload.question, payload.history),
             )
             generation_time_ms = int((perf_counter() - generation_started) * 1000)
             return QueryResponse(
@@ -717,6 +947,9 @@ class RAGService:
                 retrieval_time_ms=retrieval_time_ms,
                 generation_time_ms=generation_time_ms,
                 total_time_ms=int((perf_counter() - request_started) * 1000),
+                debug_results=search_response.results if payload.debug else [],
+                debug_selected_results=selected_results if payload.debug else [],
+                debug_expanded_results=expanded_results if payload.debug else [],
             )
 
         generation_started = perf_counter()
@@ -728,7 +961,10 @@ class RAGService:
                 "involves deception as part of stage magic. Answer directly in "
                 f"{self._language_name(payload.language)} and, if uncertain, say so."
             ),
-            user_prompt=payload.question,
+            user_prompt="\n\n".join(
+                part for part in [self._history_text(payload.history), f"Question:\n{payload.question}"] if part
+            ),
+            max_tokens=360,
         )
         generation_time_ms = int((perf_counter() - generation_started) * 1000)
         return QueryResponse(
@@ -742,6 +978,9 @@ class RAGService:
             retrieval_time_ms=retrieval_time_ms,
             generation_time_ms=generation_time_ms,
             total_time_ms=int((perf_counter() - request_started) * 1000),
+            debug_results=search_response.results if payload.debug else [],
+            debug_selected_results=[],
+            debug_expanded_results=[],
         )
 
     async def get_stats(self) -> StatsResponse:

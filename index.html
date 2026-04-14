@@ -385,6 +385,8 @@
       border-radius: 16px;
       padding: 12px 14px;
       color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
       white-space: pre-wrap;
     }
 
@@ -641,6 +643,8 @@
     let loadingNode = null;
     let loadingTimer = null;
     let loadingStartedAt = 0;
+    const conversationHistory = [];
+    const MAX_HISTORY_TURNS = 5;
 
     function t(key) {
       return translations[language][key];
@@ -790,6 +794,16 @@
 
     function createUserMessage(question) {
       createMessage("user", '<div class="bubble">' + escapeHtml(question) + "</div>");
+    }
+
+    function appendHistory(role, content) {
+      const trimmed = String(content || "").trim();
+      if (!trimmed) return;
+      conversationHistory.push({ role, content: trimmed });
+      const maxMessages = MAX_HISTORY_TURNS * 2;
+      if (conversationHistory.length > maxMessages) {
+        conversationHistory.splice(0, conversationHistory.length - maxMessages);
+      }
     }
 
     function formatText(template, values) {
@@ -983,6 +997,8 @@
           chip.querySelector(".source-toggle").textContent = item.classList.contains("open") ? "−" : "+";
         });
       });
+
+      appendHistory("assistant", answer);
     }
 
     function createErrorMessage(message) {
@@ -997,6 +1013,7 @@
       if (!trimmed) return;
 
       createUserMessage(trimmed);
+      appendHistory("user", trimmed);
       input.value = "";
       autoResize();
       input.focus();
@@ -1013,7 +1030,8 @@
           body: JSON.stringify({
             question: trimmed,
             top_k: 3,
-            language
+            language,
+            history: conversationHistory.slice(0, -1)
           })
         });
 

@@ -26,7 +26,11 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
     return [item.embedding for item in response.data]
 
 
-async def complete_chat(system_prompt: str, user_prompt: str) -> str:
+async def complete_chat(
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int | None = None,
+) -> str:
     """Generate a non-streaming chat completion."""
     response = await get_deepseek_client().chat.completions.create(
         model=settings.deepseek_chat_model,
@@ -35,5 +39,6 @@ async def complete_chat(system_prompt: str, user_prompt: str) -> str:
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.0,
+        max_tokens=max_tokens,
     )
     return response.choices[0].message.content or ""

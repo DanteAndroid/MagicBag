@@ -26,6 +26,7 @@ class SearchRequest(BaseModel):
 
     query: str = Field(..., min_length=1, description="Search query.")
     top_k: int | None = Field(default=None, ge=1, le=20)
+    debug: bool = False
 
 
 class SearchResult(BaseModel):
@@ -42,6 +43,15 @@ class SearchResponse(BaseModel):
 
     query: str
     results: list[SearchResult]
+    selected_results: list[SearchResult] = []
+    expanded_results: list[SearchResult] = []
+
+
+class ChatTurn(BaseModel):
+    """Single turn of lightweight chat history."""
+
+    role: str = Field(pattern="^(user|assistant)$")
+    content: str = Field(min_length=1)
 
 
 class QueryRequest(BaseModel):
@@ -50,6 +60,8 @@ class QueryRequest(BaseModel):
     question: str = Field(..., min_length=1, description="User question.")
     top_k: int | None = Field(default=None, ge=1, le=20)
     language: str = Field(default="zh", pattern="^(zh|en)$")
+    debug: bool = False
+    history: list[ChatTurn] = []
 
 
 class QueryResponse(BaseModel):
@@ -65,3 +77,6 @@ class QueryResponse(BaseModel):
     retrieval_time_ms: int | None = None
     generation_time_ms: int | None = None
     total_time_ms: int | None = None
+    debug_results: list[SearchResult] = []
+    debug_selected_results: list[SearchResult] = []
+    debug_expanded_results: list[SearchResult] = []

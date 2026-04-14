@@ -64,12 +64,34 @@ def normalize_text(text: str) -> str:
     return text.strip()
 
 
+def split_into_sentences(text: str) -> list[str]:
+    """Split text into sentence-like units while preserving sentence endings."""
+    if not text:
+        return []
+
+    blocks = re.split(r"\n{2,}", text)
+    sentences: list[str] = []
+    sentence_pattern = re.compile(r".+?(?:[。！？!?]+|\.{3,}|…{1,2}|(?<!\d)\.(?!\d)|$)", re.S)
+
+    for block in blocks:
+        stripped_block = block.strip()
+        if not stripped_block:
+            continue
+
+        for match in sentence_pattern.finditer(stripped_block):
+            sentence = match.group(0).strip()
+            if sentence:
+                sentences.append(sentence)
+
+    return sentences
+
+
 def chunk_text(
     text: str,
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
 ) -> list[str]:
-    """Split text into overlapping character chunks."""
+    """Split text into overlapping sentence-aligned chunks."""
     text = normalize_text(text)
     if not text:
         return []
@@ -83,16 +105,58 @@ def chunk_text(
     if overlap >= size:
         raise ValueError("chunk_overlap must be smaller than chunk_size.")
 
+    sentences = split_into_sentences(text)
+    if not sentences:
+        return []
+
     chunks: list[str] = []
-    start = 0
-    step = size - overlap
-    while start < len(text):
-        if chunks and start + overlap >= len(text):
+    index = 0
+
+    while index < len(sentences):
+        current_sentences: list[str] = []
+        current_length = 0
+        cursor = index
+
+        while cursor < len(sentences):
+            sentence = sentences[cursor]
+            separator = 1 if current_sentences else 0
+            proposed_length = current_length + separator + len(sentence)
+            if current_sentences and proposed_length > size:
+                break
+            current_sentences.append(sentence)
+            current_length = proposed_length
+            cursor += 1
+
+            # Allow a single sentence to exceed the target size rather than hard-cutting it.
+            if len(current_sentences) == 1 and len(sentence) >= size:
+                break
+
+        if not current_sentences:
             break
-        chunk = text[start : start + size].strip()
-        if chunk:
-            chunks.append(chunk)
-        start += step
+
+        chunks.append(" ".join(current_sentences).strip())
+        if cursor >= len(sentences):
+            break
+
+        if overlap == 0:
+            index = cursor
+            continue
+
+        overlap_length = 0
+        next_index = cursor
+        while next_index > index:
+            sentence = sentences[next_index - 1]
+            separator = 1 if overlap_length else 0
+            proposed_overlap = overlap_length + separator + len(sentence)
+            if overlap_length and proposed_overlap > overlap:
+                break
+            overlap_length = proposed_overlap
+            next_index -= 1
+
+        if next_index == index:
+            next_index = min(cursor, index + 1)
+        index = next_index
+
     return chunks
 
 

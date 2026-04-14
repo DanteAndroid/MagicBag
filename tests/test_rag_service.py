@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from app.schemas.rag import IngestRequest, QueryRequest, SearchRequest
+from app.schemas.rag import ChatTurn, IngestRequest, QueryRequest, SearchRequest
 from app.services.rag_service import RAGService
 
 
@@ -58,6 +58,40 @@ async def test_semantic_search_returns_payload_results(monkeypatch: pytest.Monke
     assert len(result.results) == 1
     assert result.results[0].source == "/tmp/note.md"
     assert result.results[0].content == "alpha beta gamma"
+
+
+@pytest.mark.asyncio
+async def test_semantic_search_returns_debug_views(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.services.rag_service.settings.deepseek_api_key", "key")
+    monkeypatch.setattr("app.services.rag_service.settings.qdrant_url", "https://example.com")
+    monkeypatch.setattr("app.services.rag_service.settings.qdrant_api_key", "secret")
+    monkeypatch.setattr("app.services.rag_service.embed_texts", lambda texts: _embed(texts))
+    monkeypatch.setattr(
+        "app.services.rag_service.query_points",
+        lambda vector, limit, score_threshold: [
+            _Point(
+                score=0.91,
+                payload={
+                    "source": "/tmp/Darwin Ortiz - Strong Magic.txt",
+                    "filename": "Darwin Ortiz - Strong Magic.txt",
+                    "chunk_index": 0,
+                    "content": "alpha beta gamma",
+                },
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "app.services.rag_service.fetch_source_chunks",
+        lambda source, start, end: [
+            _Point(score=0.0, payload={"chunk_index": 0, "content": "alpha beta gamma"})
+        ],
+    )
+
+    result = await RAGService().semantic_search(SearchRequest(query="Strong Magic", debug=True))
+
+    assert len(result.results) == 1
+    assert len(result.selected_results) == 1
+    assert len(result.expanded_results) == 1
 
 
 @pytest.mark.asyncio
@@ -138,20 +172,33 @@ async def test_answer_question_uses_rag_context(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr("app.services.rag_service.complete_chat", _complete_chat)
 
     result = await RAGService().answer_question(
-        QueryRequest(question="ignored", top_k=3, language="en")
+        QueryRequest(
+            question="ignored",
+            top_k=3,
+            language="en",
+            debug=True,
+            history=[
+                ChatTurn(role="user", content="Tell me about Strong Magic."),
+                ChatTurn(role="assistant", content="It is about performance theory."),
+            ],
+        )
     )
 
     assert result.used_rag is True
     assert result.fallback_used is False
     assert result.answer == "rag answer"
     assert len(result.sources) == 1
-    assert "[Excerpt 1]" in result.sources[0].content
-    assert "[Excerpt 2]" in result.sources[0].content
+    assert "alpha beta gamma" in result.sources[0].content
+    assert "delta epsilon zeta" in result.sources[0].content
     assert result.embedding_time_ms is not None
     assert result.vector_search_time_ms is not None
     assert result.retrieval_time_ms is not None
     assert result.generation_time_ms is not None
     assert result.total_time_ms is not None
+    assert len(result.debug_results) == 2
+    assert len(result.debug_selected_results) == 2
+    assert len(result.debug_expanded_results) == 1
+    assert "[Excerpt 1]" in result.debug_expanded_results[0].content
 
 
 @pytest.mark.asyncio
@@ -205,6 +252,28 @@ def test_expand_results_with_neighbors_pulls_adjacent_chunks(monkeypatch: pytest
     assert "[Excerpt 3] after" in expanded[0].content
 
 
+def test_compress_results_for_prompt_keeps_relevant_sentences() -> None:
+    compressed = RAGService._compress_results_for_prompt(
+        "which hand 的方法",
+        [],
+        [
+            _search_result(
+                "48 Which Hand Fraser Parker.md",
+                0,
+                "[Excerpt 1] This is the opening overview. [Excerpt 2] The method uses three phases. "
+                "[Excerpt 3] The spectator hides a coin behind their back. [Excerpt 4] It avoids logic puzzles.",
+                0.68,
+                title="Which Hand",
+                author="Fraser Parker",
+            )
+        ],
+    )
+
+    assert len(compressed) == 1
+    assert "three phases" in compressed[0].content
+    assert "hides a coin" in compressed[0].content
+
+
 def test_select_context_results_prefers_named_method_source() -> None:
     selected = RAGService._select_context_results(
         "which hand 的方法",
@@ -239,6 +308,51 @@ def test_select_context_results_prefers_named_method_source() -> None:
     assert len(selected) == 1
     assert selected[0].metadata["title"] == "Which Hand"
     assert selected[0].metadata["author"] == "Fraser Parker"
+
+
+def test_select_context_results_uses_history_for_followup() -> None:
+    selected = RAGService._select_context_results(
+        "有什么表演技巧吗？",
+        [
+            _search_result(
+                "Darwin Ortiz - Strong Magic.txt",
+                64,
+                "audience management and showmanship",
+                0.51,
+                title="Strong Magic",
+                author="Darwin Ortiz",
+            ),
+            _search_result(
+                "Corinda’s 13 Steps to Mentalism (1968).txt",
+                3037,
+                "borrowed paper and cards",
+                0.50,
+                title="Corinda’s 13 Steps to Mentalism (1968)",
+                author=None,
+            ),
+        ],
+        history=[
+            ChatTurn(role="user", content="Strong Magic 讲了什么？"),
+            ChatTurn(role="assistant", content="它讨论表演理论。"),
+        ],
+    )
+
+    assert len(selected) == 1
+    assert selected[0].metadata["title"] == "Strong Magic"
+
+
+def test_build_search_query_includes_recent_user_context() -> None:
+    query = RAGService._build_search_query(
+        "有什么表演技巧吗？",
+        [
+            ChatTurn(role="user", content="Strong Magic 讲了什么？"),
+            ChatTurn(role="assistant", content="它谈的是表演理论。"),
+            ChatTurn(role="user", content="我想继续问这本书。"),
+        ],
+    )
+    assert "Strong Magic 讲了什么？" in query
+    assert "我想继续问这本书。" in query
+    assert "Current question: 有什么表演技巧吗？" in query
 
 
 async def _embed(texts: list[str]) -> list[list[float]]:
@@ -337,22 +451,27 @@ def _search_result(
     )
 
 
-async def _complete_chat(system_prompt: str, user_prompt: str) -> str:
+async def _complete_chat(system_prompt: str, user_prompt: str, max_tokens: int | None = None) -> str:
     assert "Context:" in user_prompt
     assert "do not use outside knowledge" in system_prompt.lower()
     assert "never introduce a person" in system_prompt.lower()
     assert "according to the file" in system_prompt.lower()
     assert "magic teaching" in system_prompt.lower()
+    assert "answer the question completely and in detail" in system_prompt.lower()
     assert "author: Darwin Ortiz" in user_prompt
     assert "title: Strong Magic" in user_prompt
-    assert "[Excerpt 1] alpha beta gamma" in user_prompt
-    assert "[Excerpt 2] delta epsilon zeta" in user_prompt
+    assert "Recent conversation:" in user_prompt
+    assert "User: Tell me about Strong Magic." in user_prompt
+    assert "alpha beta gamma" in user_prompt
+    assert "delta epsilon zeta" in user_prompt
+    assert "Answer guidance:" in user_prompt
     assert "do not guess or substitute one" in system_prompt.lower()
     assert "ui already shows the references" in user_prompt.lower()
     assert "do not add extra recommendations" in user_prompt.lower()
     assert "natural, idiomatic simplified chinese" in user_prompt.lower()
     assert "do not invent or substitute a different author" in user_prompt.lower()
     assert "english" in user_prompt.lower()
+    assert max_tokens is not None
     return "rag answer"
 
 
@@ -366,5 +485,6 @@ def test_term_guide_for_chinese() -> None:
     assert "If one of these terms is needed" in guide
 
 
-async def _fallback_chat(system_prompt: str, user_prompt: str) -> str:
+async def _fallback_chat(system_prompt: str, user_prompt: str, max_tokens: int | None = None) -> str:
+    assert max_tokens == 360
     return "fallback answer"

@@ -57,10 +57,10 @@ class Settings(BaseSettings):
     )
     embedding_batch_size: int = 32
 
-    top_k: int = 5
+    top_k: int = 8
     score_threshold: float = 0.45
-    chunk_size: int = 400
-    chunk_overlap: int = 60
+    chunk_size: int = 800
+    chunk_overlap: int = 100
     query_chunk_window: int = 2
     max_context_sources: int = 3
     max_chunks_per_source: int = 6
