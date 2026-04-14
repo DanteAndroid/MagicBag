@@ -5,6 +5,8 @@ assembly, and LLM fallback behavior.
 """
 
 from functools import lru_cache
+from pathlib import Path
+from time import perf_counter
 from uuid import uuid5, NAMESPACE_URL
 
 from qdrant_client.models import PointStruct
@@ -151,11 +153,15 @@ class RAGService:
     def _format_context(results: list[SearchResult]) -> str:
         parts: list[str] = []
         for index, result in enumerate(results, start=1):
+            title = result.metadata.get("title")
+            author = result.metadata.get("author")
             parts.append(
                 "\n".join(
                     [
                         f"[Source {index}]",
                         f"file: {result.metadata.get('filename') or result.source}",
+                        f"title: {title or 'unknown'}",
+                        f"author: {author or 'unknown'}",
                         f"score: {result.score:.4f}",
                         result.content,
                     ]
@@ -166,6 +172,53 @@ class RAGService:
     @staticmethod
     def _language_name(language: str) -> str:
         return "English" if language == "en" else "Chinese"
+
+    @staticmethod
+    def _is_author_candidate(text: str) -> bool:
+        cleaned = text.strip()
+        if not cleaned or any(char.isdigit() for char in cleaned):
+            return False
+
+        words = [word for word in cleaned.replace("’", "'").split() if word]
+        if not words or len(words) > 5:
+            return False
+
+        if words[0].lower() in {"the", "a", "an"}:
+            return False
+
+        capitalized = 0
+        for word in words:
+            token = word.strip(".,()[]{}'\"")
+            if not token:
+                continue
+            if token[0].isupper():
+                capitalized += 1
+
+        return capitalized >= max(1, len(words) - 1)
+
+    @classmethod
+    def _reference_metadata(cls, source: str, filename: str | None) -> dict[str, str | int | float | bool | None]:
+        resolved_filename = filename or Path(source).name
+        stem = Path(resolved_filename).stem.strip()
+        title = stem
+        author: str | None = None
+
+        if " - " in stem:
+            left, right = stem.split(" - ", 1)
+            left = left.strip()
+            right = right.strip()
+            if cls._is_author_candidate(left):
+                author = left
+                title = right or title
+            elif cls._is_author_candidate(right):
+                title = left or title
+                author = right
+
+        return {
+            "filename": resolved_filename,
+            "title": title,
+            "author": author,
+        }
 
     @classmethod
     def _expand_query(cls, query: str) -> str:
@@ -296,42 +349,65 @@ class RAGService:
 
     async def semantic_search(self, payload: SearchRequest) -> SearchResponse:
         """Run semantic retrieval."""
+        search_response, _, _ = await self._semantic_search_with_timings(payload)
+        return search_response
+
+    async def _semantic_search_with_timings(
+        self,
+        payload: SearchRequest,
+    ) -> tuple[SearchResponse, int, int]:
+        """Run semantic retrieval and capture embedding/search timings."""
         error = self._require_ingest_dependencies()
         if error:
-            return SearchResponse(query=payload.query, results=[])
+            return SearchResponse(query=payload.query, results=[]), 0, 0
 
         expanded_query = self._expand_query(payload.query)
+        embedding_started = perf_counter()
         vector = (await embed_texts([expanded_query]))[0]
+        embedding_time_ms = int((perf_counter() - embedding_started) * 1000)
+        vector_search_started = perf_counter()
         points = query_points(
             vector=vector,
             limit=payload.top_k or settings.top_k,
             score_threshold=settings.score_threshold,
         )
+        vector_search_time_ms = int((perf_counter() - vector_search_started) * 1000)
         results = [
             SearchResult(
                 source=point.payload.get("source", ""),
                 score=point.score or 0.0,
                 content=point.payload.get("content", ""),
-                metadata={
-                    "filename": point.payload.get("filename"),
-                    "chunk_index": point.payload.get("chunk_index"),
-                },
+                metadata=(
+                    self._reference_metadata(
+                        point.payload.get("source", ""),
+                        point.payload.get("filename"),
+                    )
+                    | {
+                        "chunk_index": point.payload.get("chunk_index"),
+                    }
+                ),
             )
             for point in points
         ]
-        return SearchResponse(query=payload.query, results=results)
+        return (
+            SearchResponse(query=payload.query, results=results),
+            embedding_time_ms,
+            vector_search_time_ms,
+        )
 
     async def answer_question(self, payload: QueryRequest) -> QueryResponse:
         """Answer a question with RAG and fallback behavior."""
         if not payload.question.strip():
             raise ValueError("Question cannot be empty.")
 
-        search_response = await self.semantic_search(
+        request_started = perf_counter()
+        search_response, embedding_time_ms, vector_search_time_ms = await self._semantic_search_with_timings(
             SearchRequest(
                 query=payload.question,
                 top_k=payload.top_k or settings.top_k,
             )
         )
+        retrieval_time_ms = embedding_time_ms + vector_search_time_ms
         strong_results = [
             result
             for result in search_response.results
@@ -340,6 +416,7 @@ class RAGService:
 
         if strong_results:
             answer_language = self._language_name(payload.language)
+            generation_started = perf_counter()
             answer = await complete_chat(
                 system_prompt=(
                     "You are a careful RAG assistant for magic performance study. "
@@ -348,6 +425,9 @@ class RAGService:
                     "magic methods. Use only the provided context and do not use "
                     "outside knowledge or memory. If a title, author, date, or term "
                     "appears in the context, preserve it exactly as written there. "
+                    "Treat structured source metadata such as file, title, and author "
+                    "as authoritative. If author is unknown in the context, do not "
+                    "guess or substitute one. "
                     "Do not translate or rewrite proper nouns unless the translated "
                     "form is already present in the context. Never introduce a person, "
                     "book, method, or recommendation that does not appear in the "
@@ -363,20 +443,29 @@ class RAGService:
                     "Answer only the user's question and do not add extra recommendations "
                     "or related people unless explicitly asked. Do not invent or substitute "
                     "a different author, title, or book. If the context names the source "
-                    "file, prefer that exact file name. If the answer language is Chinese, "
+                    "file, title, or author, prefer those exact values. If the context does "
+                    "not provide an author, say that the provided excerpt does not identify "
+                    "the author instead of guessing. If the answer language is Chinese, "
                     "use natural, idiomatic Simplified Chinese instead of literal translation, "
                     "but keep names and titles exactly as they appear in the context."
                     f"{self._relevant_term_guide(payload.language, payload.question, strong_results)}"
                 ),
             )
+            generation_time_ms = int((perf_counter() - generation_started) * 1000)
             return QueryResponse(
                 question=payload.question,
                 answer=answer.strip(),
                 used_rag=True,
                 fallback_used=False,
                 sources=strong_results,
+                embedding_time_ms=embedding_time_ms,
+                vector_search_time_ms=vector_search_time_ms,
+                retrieval_time_ms=retrieval_time_ms,
+                generation_time_ms=generation_time_ms,
+                total_time_ms=int((perf_counter() - request_started) * 1000),
             )
 
+        generation_started = perf_counter()
         fallback_answer = await complete_chat(
             system_prompt=(
                 "You are a helpful assistant for magic performance study. Assume the "
@@ -387,12 +476,18 @@ class RAGService:
             ),
             user_prompt=payload.question,
         )
+        generation_time_ms = int((perf_counter() - generation_started) * 1000)
         return QueryResponse(
             question=payload.question,
             answer=fallback_answer.strip(),
             used_rag=False,
             fallback_used=True,
             sources=search_response.results,
+            embedding_time_ms=embedding_time_ms,
+            vector_search_time_ms=vector_search_time_ms,
+            retrieval_time_ms=retrieval_time_ms,
+            generation_time_ms=generation_time_ms,
+            total_time_ms=int((perf_counter() - request_started) * 1000),
         )
 
     async def get_stats(self) -> StatsResponse:

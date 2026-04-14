@@ -78,6 +78,7 @@
       letter-spacing: 0.02em;
       color: var(--text);
       flex-wrap: wrap;
+      text-decoration: none;
     }
 
     .brand-mark {
@@ -85,9 +86,13 @@
       text-shadow: 0 0 20px rgba(201, 168, 76, 0.3);
     }
 
-    .brand-cn {
+    .brand-name {
       color: var(--accent);
-      font-weight: 600;
+      font-weight: 700;
+    }
+
+    .brand:hover .brand-name {
+      text-shadow: 0 0 20px rgba(201, 168, 76, 0.28);
     }
 
     .subtitle {
@@ -188,17 +193,18 @@
     }
 
     .assistant-shell {
-      width: min(100%, 620px);
+      width: 100%;
     }
 
     .bubble,
     .answer-card {
-      width: min(100%, 620px);
       border-radius: var(--radius);
       box-shadow: var(--shadow);
     }
 
     .bubble {
+      width: auto;
+      max-width: min(88%, 560px);
       background: linear-gradient(180deg, rgba(201, 168, 76, 0.22), rgba(201, 168, 76, 0.12));
       color: var(--text);
       padding: 16px 18px;
@@ -206,19 +212,31 @@
 
     .answer-card {
       position: relative;
+      width: 100%;
       background: rgba(36, 36, 36, 0.92);
       padding: 14px 16px 16px;
       backdrop-filter: blur(10px);
     }
 
-    .assistant-actions {
+    .answer-meta-row {
       display: flex;
       align-items: center;
-      justify-content: flex-end;
-      margin-bottom: 8px;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 4px 0;
+      color: var(--muted);
+      font-size: 13px;
+      flex-wrap: wrap;
     }
 
-    .copy-btn {
+    .answer-tools {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: auto;
+    }
+
+    .tool-btn {
       border: 0;
       border-radius: 999px;
       background: rgba(255, 255, 255, 0.04);
@@ -229,7 +247,7 @@
       transition: background 140ms ease, color 140ms ease;
     }
 
-    .copy-btn:hover {
+    .tool-btn:hover {
       background: var(--accent-soft);
       color: var(--accent);
     }
@@ -299,30 +317,60 @@
 
     .sources {
       margin-top: 18px;
-      display: flex;
-      flex-wrap: wrap;
+      display: grid;
       gap: 10px;
     }
 
     .source-item {
       width: 100%;
+      background: rgba(255, 255, 255, 0.03);
+      border-radius: 16px;
     }
 
     .source-chip {
-      display: inline-flex;
+      width: 100%;
+      display: flex;
       align-items: center;
-      gap: 8px;
+      justify-content: space-between;
+      gap: 12px;
       background: rgba(201, 168, 76, 0.08);
-      color: var(--accent);
+      color: var(--text);
       border: 0;
-      border-radius: 999px;
-      padding: 8px 12px;
+      border-radius: 16px;
+      padding: 12px 14px;
       cursor: pointer;
-      font: 13px/1 system-ui, sans-serif;
+      font: 13px/1.4 system-ui, sans-serif;
+      text-align: left;
     }
 
     .source-chip:hover {
       background: rgba(201, 168, 76, 0.14);
+    }
+
+    .source-head {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .source-title {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .source-author,
+    .source-filename {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .source-toggle {
+      color: var(--accent);
+      font-size: 18px;
+      line-height: 1;
+      flex-shrink: 0;
     }
 
     .source-snippet {
@@ -488,7 +536,7 @@
   <main class="app">
     <header class="hero">
       <div class="hero-copy">
-        <div class="brand"><span class="brand-mark">✦</span> <span data-i18n="brandEn">MagicBag</span> <span class="brand-cn" data-i18n="brandCn">魔法口袋</span></div>
+        <a class="brand" href="/"><span class="brand-mark">✦</span> <span class="brand-name" data-i18n="brand">魔法口袋</span></a>
         <p class="subtitle" data-i18n="subtitle">面向纸牌魔术、心灵魔术和表演理论的知识助手。它会检索你的资料库，并给出带来源的回答。</p>
       </div>
       <div class="lang-switch" aria-label="language switch">
@@ -526,8 +574,7 @@
     const translations = {
       zh: {
         pageTitle: "MagicBag | 魔法口袋",
-        brandEn: "MagicBag",
-        brandCn: "魔法口袋",
+        brand: "魔法口袋",
         subtitle: "纸牌魔术、心灵魔术和表演理论的知识助手。",
         emptyTitle: "你可以问：",
         emptyDesc: "",
@@ -536,14 +583,16 @@
         copy: "复制",
         copied: "已复制",
         copyFailed: "失败",
+        retry: "重试",
         noAnswer: "没有返回回答。",
         noSnippet: "暂无原文片段。",
         sourceLabel: "来源",
+        unknownAuthor: "作者未标注",
         error: "无法连接到魔法口袋，请检查部署状态、接口地址或跨域配置。",
-        loadingConnecting: "正在连接服务…",
-        loadingWaiting: "已发送请求，等待返回…",
-        loadingRendering: "正在渲染回答…",
+        loadingStatus: "请求已发送，正在检索资料并生成回答…",
         loadingElapsed: "已等待 {seconds}s",
+        totalTime: "总耗时 {seconds}s",
+        timingBreakdown: "Embedding {embedding}s · 检索 {vector}s · 生成 {generation}s",
         examples: [
           "什么是迫牌？可以简单解释一下吗？",
           "推荐一个适合新手的纸牌魔术效果",
@@ -554,8 +603,7 @@
       },
       en: {
         pageTitle: "MagicBag | MagicBag",
-        brandEn: "MagicBag",
-        brandCn: "MagicBag",
+        brand: "MagicBag",
         subtitle: "A knowledge assistant for card magic, mentalism, and performance theory.",
         emptyTitle: "You can ask:",
         emptyDesc: "",
@@ -564,14 +612,16 @@
         copy: "Copy",
         copied: "Copied",
         copyFailed: "Failed",
+        retry: "Retry",
         noAnswer: "No answer returned.",
         noSnippet: "No snippet available.",
         sourceLabel: "Source",
+        unknownAuthor: "Author not listed",
         error: "Unable to reach MagicBag. Check the deployment, API endpoint, or CORS configuration.",
-        loadingConnecting: "Connecting to service…",
-        loadingWaiting: "Request sent, waiting for response…",
-        loadingRendering: "Rendering answer…",
+        loadingStatus: "Request sent. Retrieving context and generating an answer…",
         loadingElapsed: "Waiting {seconds}s",
+        totalTime: "Total {seconds}s",
+        timingBreakdown: "Embedding {embedding}s · Search {vector}s · Generation {generation}s",
         examples: [
           "What is a card force in simple terms?",
           "Recommend a beginner-friendly card magic effect",
@@ -586,7 +636,6 @@
     let loadingNode = null;
     let loadingTimer = null;
     let loadingStartedAt = 0;
-    let loadingStage = "connecting";
 
     function t(key) {
       return translations[language][key];
@@ -742,6 +791,11 @@
       return template.replace(/\{(\w+)\}/g, (_, key) => values[key] ?? "");
     }
 
+    function formatSeconds(ms) {
+      if (typeof ms !== "number" || Number.isNaN(ms)) return "0.0";
+      return (ms / 1000).toFixed(ms >= 10000 ? 0 : 1);
+    }
+
     function createLoadingMessage() {
       loadingNode = createMessage(
         "assistant",
@@ -758,20 +812,14 @@
         ].join("")
       );
       loadingStartedAt = Date.now();
-      loadingStage = "connecting";
 
       const stateNode = loadingNode.querySelector(".loading-state");
       const elapsedNode = loadingNode.querySelector(".loading-elapsed");
       const tick = () => {
         if (!loadingNode) return;
-        stateNode.textContent =
-          loadingStage === "connecting"
-            ? t("loadingConnecting")
-            : loadingStage === "rendering"
-              ? t("loadingRendering")
-              : t("loadingWaiting");
+        stateNode.textContent = t("loadingStatus");
         elapsedNode.textContent = formatText(t("loadingElapsed"), {
-          seconds: Math.max(1, Math.floor((Date.now() - loadingStartedAt) / 1000))
+          seconds: formatSeconds(Date.now() - loadingStartedAt)
         });
       };
 
@@ -792,14 +840,58 @@
 
     function buildSources(sources) {
       if (!Array.isArray(sources) || !sources.length) return "";
-      const items = sources.map((source, index) => {
+
+      const extractReference = (source, index) => {
         const filename = source.metadata?.filename || source.source || (t("sourceLabel") + " " + (index + 1));
+        const parsedName = filename.split("/").pop() || filename;
+        const stem = parsedName.replace(/\.[^.]+$/, "");
+        const metadataTitle = source.metadata?.title;
+        const metadataAuthor = source.metadata?.author;
+
+        if (metadataTitle || metadataAuthor) {
+          return {
+            filename: parsedName,
+            title: metadataTitle || stem,
+            author: metadataAuthor || t("unknownAuthor")
+          };
+        }
+
+        if (stem.includes(" - ")) {
+          const [left, right] = stem.split(" - ", 2).map((part) => part.trim());
+          const looksLikeAuthor = (text) => {
+            if (!text || /\d/.test(text)) return false;
+            const words = text.split(/\s+/).filter(Boolean);
+            if (!words.length || words.length > 5) return false;
+            if (["the", "a", "an"].includes(words[0].toLowerCase())) return false;
+            return words.filter((word) => /^[A-Z]/.test(word)).length >= Math.max(1, words.length - 1);
+          };
+          if (looksLikeAuthor(left)) {
+            return { filename: parsedName, title: right || stem, author: left };
+          }
+          if (looksLikeAuthor(right)) {
+            return { filename: parsedName, title: left || stem, author: right };
+          }
+        }
+
+        return {
+          filename: parsedName,
+          title: stem,
+          author: t("unknownAuthor")
+        };
+      };
+
+      const items = sources.map((source, index) => {
+        const reference = extractReference(source, index);
         const snippet = source.content || t("noSnippet");
         return [
           '<div class="source-item">',
           '<button class="source-chip" type="button">',
-          "<span>" + escapeHtml(filename) + "</span>",
-          "<span>+</span>",
+          '<span class="source-head">',
+          '<span class="source-title">' + escapeHtml(reference.title) + "</span>",
+          '<span class="source-author">' + escapeHtml(reference.author) + "</span>",
+          '<span class="source-filename">' + escapeHtml(reference.filename) + "</span>",
+          "</span>",
+          '<span class="source-toggle">+</span>',
           "</button>",
           '<div class="source-snippet">' + escapeHtml(snippet) + "</div>",
           "</div>"
@@ -808,17 +900,21 @@
       return '<div class="sources">' + items + "</div>";
     }
 
-    async function streamAssistantMessage(answer, sources) {
+    async function streamAssistantMessage(question, answer, sources, timing) {
       const card = createMessage(
         "assistant",
         [
           '<div class="assistant-shell">',
-          '<div class="assistant-actions">',
-          '<button class="copy-btn" type="button">' + escapeHtml(t("copy")) + "</button>",
-          "</div>",
           '<div class="answer-card">',
           '<div class="answer-body"></div>',
           buildSources(sources),
+          "</div>",
+          '<div class="answer-meta-row">',
+          '<div class="answer-timing"></div>',
+          '<div class="answer-tools">',
+          '<button class="tool-btn retry-btn" type="button">' + escapeHtml(t("retry")) + "</button>",
+          '<button class="tool-btn copy-btn" type="button">' + escapeHtml(t("copy")) + "</button>",
+          "</div>",
           "</div>",
           "</div>"
         ].join("")
@@ -826,7 +922,10 @@
 
       const body = card.querySelector(".answer-body");
       const copyButton = card.querySelector(".copy-btn");
+      const retryButton = card.querySelector(".retry-btn");
+      const timingNode = card.querySelector(".answer-timing");
       copyButton.disabled = true;
+      retryButton.disabled = true;
 
       const total = answer.length;
       const step = total > 1800 ? 36 : total > 900 ? 22 : 12;
@@ -838,6 +937,23 @@
       }
 
       copyButton.disabled = false;
+      retryButton.disabled = false;
+      const totalTimeText = formatText(t("totalTime"), {
+        seconds: formatSeconds(timing?.totalTimeMs ?? 0)
+      });
+      timingNode.textContent = totalTimeText;
+      if (
+        typeof timing?.embeddingTimeMs === "number" &&
+        typeof timing?.vectorSearchTimeMs === "number" &&
+        typeof timing?.generationTimeMs === "number"
+      ) {
+        timingNode.title = formatText(t("timingBreakdown"), {
+          embedding: formatSeconds(timing.embeddingTimeMs),
+          vector: formatSeconds(timing.vectorSearchTimeMs),
+          generation: formatSeconds(timing.generationTimeMs)
+        });
+      }
+
       copyButton.addEventListener("click", async () => {
         try {
           await navigator.clipboard.writeText(answer);
@@ -852,12 +968,15 @@
           }, 1200);
         }
       });
+      retryButton.addEventListener("click", () => {
+        ask(question);
+      });
 
       card.querySelectorAll(".source-chip").forEach((chip) => {
         chip.addEventListener("click", () => {
           const item = chip.closest(".source-item");
           item.classList.toggle("open");
-          chip.lastElementChild.textContent = item.classList.contains("open") ? "−" : "+";
+          chip.querySelector(".source-toggle").textContent = item.classList.contains("open") ? "−" : "+";
         });
       });
     }
@@ -879,6 +998,7 @@
       input.focus();
       sendButton.disabled = true;
       createLoadingMessage();
+      const requestStartedAt = performance.now();
 
       try {
         const response = await fetch(API_ENDPOINT, {
@@ -897,16 +1017,22 @@
           throw new Error("Request failed with status " + response.status);
         }
 
-        loadingStage = "waiting";
         const data = await response.json();
-        loadingStage = "rendering";
         removeLoadingMessage();
 
         const answer = data.answer || (Array.isArray(data.results) && data.results.length
           ? data.results.map((item) => "- " + (item.content || "")).join("\n")
           : t("noAnswer"));
         const sources = data.sources || data.results || [];
-        await streamAssistantMessage(answer, sources);
+        await streamAssistantMessage(trimmed, answer, sources, {
+          totalTimeMs: typeof data.total_time_ms === "number"
+            ? data.total_time_ms
+            : Math.round(performance.now() - requestStartedAt),
+          embeddingTimeMs: data.embedding_time_ms,
+          vectorSearchTimeMs: data.vector_search_time_ms,
+          retrievalTimeMs: data.retrieval_time_ms,
+          generationTimeMs: data.generation_time_ms
+        });
       } catch (error) {
         removeLoadingMessage();
         createErrorMessage(t("error"));

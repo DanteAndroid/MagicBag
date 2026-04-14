@@ -60,3 +60,8 @@ class QueryResponse(BaseModel):
     used_rag: bool
     fallback_used: bool
     sources: list[SearchResult] = []
+    embedding_time_ms: int | None = None
+    vector_search_time_ms: int | None = None
+    retrieval_time_ms: int | None = None
+    generation_time_ms: int | None = None
+    total_time_ms: int | None = None

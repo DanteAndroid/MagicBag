@@ -61,6 +61,33 @@ async def test_semantic_search_returns_payload_results(monkeypatch: pytest.Monke
 
 
 @pytest.mark.asyncio
+async def test_semantic_search_extracts_reference_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.services.rag_service.settings.deepseek_api_key", "key")
+    monkeypatch.setattr("app.services.rag_service.settings.qdrant_url", "https://example.com")
+    monkeypatch.setattr("app.services.rag_service.settings.qdrant_api_key", "secret")
+    monkeypatch.setattr("app.services.rag_service.embed_texts", lambda texts: _embed(texts))
+    monkeypatch.setattr(
+        "app.services.rag_service.query_points",
+        lambda vector, limit, score_threshold: [
+            _Point(
+                score=0.88,
+                payload={
+                    "source": "/tmp/Darwin Ortiz - Strong Magic.txt",
+                    "filename": "Darwin Ortiz - Strong Magic.txt",
+                    "chunk_index": 1,
+                    "content": "strong magic excerpt",
+                },
+            )
+        ],
+    )
+
+    result = await RAGService().semantic_search(SearchRequest(query="strong magic"))
+
+    assert result.results[0].metadata["title"] == "Strong Magic"
+    assert result.results[0].metadata["author"] == "Darwin Ortiz"
+
+
+@pytest.mark.asyncio
 async def test_semantic_search_expands_glossary_terms(monkeypatch: pytest.MonkeyPatch) -> None:
     captured = {}
 
@@ -83,8 +110,8 @@ async def test_semantic_search_expands_glossary_terms(monkeypatch: pytest.Monkey
 async def test_answer_question_uses_rag_context(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         RAGService,
-        "semantic_search",
-        lambda self, payload: _search_response(),
+        "_semantic_search_with_timings",
+        lambda self, payload: _search_response_with_timings(),
     )
     monkeypatch.setattr("app.services.rag_service.complete_chat", _complete_chat)
 
@@ -95,14 +122,19 @@ async def test_answer_question_uses_rag_context(monkeypatch: pytest.MonkeyPatch)
     assert result.used_rag is True
     assert result.fallback_used is False
     assert result.answer == "rag answer"
+    assert result.embedding_time_ms is not None
+    assert result.vector_search_time_ms is not None
+    assert result.retrieval_time_ms is not None
+    assert result.generation_time_ms is not None
+    assert result.total_time_ms is not None
 
 
 @pytest.mark.asyncio
 async def test_answer_question_falls_back_without_hits(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         RAGService,
-        "semantic_search",
-        lambda self, payload: _empty_search_response(),
+        "_semantic_search_with_timings",
+        lambda self, payload: _empty_search_response_with_timings(),
     )
     monkeypatch.setattr("app.services.rag_service.complete_chat", _fallback_chat)
 
@@ -113,6 +145,11 @@ async def test_answer_question_falls_back_without_hits(monkeypatch: pytest.Monke
     assert result.used_rag is False
     assert result.fallback_used is True
     assert result.answer == "fallback answer"
+    assert result.embedding_time_ms is not None
+    assert result.vector_search_time_ms is not None
+    assert result.retrieval_time_ms is not None
+    assert result.generation_time_ms is not None
+    assert result.total_time_ms is not None
 
 
 async def _embed(texts: list[str]) -> list[list[float]]:
@@ -135,7 +172,12 @@ async def _search_response():
                 source="/tmp/note.md",
                 score=0.9,
                 content="alpha beta gamma",
-                metadata={"filename": "note.md", "chunk_index": 0},
+                metadata={
+                    "filename": "Darwin Ortiz - Strong Magic.txt",
+                    "chunk_index": 0,
+                    "title": "Strong Magic",
+                    "author": "Darwin Ortiz",
+                },
             )
         ],
     )
@@ -147,10 +189,21 @@ async def _empty_search_response():
     return SearchResponse(query="q", results=[])
 
 
+async def _search_response_with_timings():
+    return await _search_response(), 12, 34
+
+
+async def _empty_search_response_with_timings():
+    return await _empty_search_response(), 12, 34
+
+
 async def _complete_chat(system_prompt: str, user_prompt: str) -> str:
     assert "Context:" in user_prompt
     assert "do not use outside knowledge" in system_prompt.lower()
     assert "never introduce a person" in system_prompt.lower()
+    assert "author: Darwin Ortiz" in user_prompt
+    assert "title: Strong Magic" in user_prompt
+    assert "do not guess or substitute one" in system_prompt.lower()
     assert "do not add extra recommendations" in user_prompt.lower()
     assert "natural, idiomatic simplified chinese" in user_prompt.lower()
     assert "do not invent or substitute a different author" in user_prompt.lower()
