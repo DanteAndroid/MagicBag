@@ -131,6 +131,9 @@ async def _empty_search_response():
 async def _complete_chat(system_prompt: str, user_prompt: str) -> str:
     assert "Context:" in user_prompt
     assert "do not use outside knowledge" in system_prompt.lower()
+    assert "never introduce a person" in system_prompt.lower()
+    assert "do not add extra recommendations" in user_prompt.lower()
+    assert "natural, idiomatic simplified chinese" in user_prompt.lower()
     assert "do not invent or substitute a different author" in user_prompt.lower()
     assert "english" in user_prompt.lower()
     return "rag answer"

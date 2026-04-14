@@ -205,16 +205,24 @@ class RAGService:
                     "magic methods. Use only the provided context and do not use "
                     "outside knowledge or memory. If a title, author, date, or term "
                     "appears in the context, preserve it exactly as written there. "
-                    "If your prior knowledge conflicts with the context, trust the "
-                    "context. If the context is insufficient, say that directly."
+                    "Do not translate or rewrite proper nouns unless the translated "
+                    "form is already present in the context. Never introduce a person, "
+                    "book, method, or recommendation that does not appear in the "
+                    "context. Never merge two different names into one. If your prior "
+                    "knowledge conflicts with the context, trust the context. If the "
+                    "context is insufficient, say that directly."
                 ),
                 user_prompt=(
                     f"Question:\n{payload.question}\n\n"
                     f"Context:\n{self._format_context(strong_results)}\n\n"
                     f"Write a concise answer in {answer_language} for a magician "
                     "studying performance methods. Mention source file names when useful. "
-                    "Do not invent or substitute a different author, title, or book. "
-                    "If the context names the source file, prefer that exact file name."
+                    "Answer only the user's question and do not add extra recommendations "
+                    "or related people unless explicitly asked. Do not invent or substitute "
+                    "a different author, title, or book. If the context names the source "
+                    "file, prefer that exact file name. If the answer language is Chinese, "
+                    "use natural, idiomatic Simplified Chinese instead of literal translation, "
+                    "but keep names and titles exactly as they appear in the context."
                 ),
             )
             return QueryResponse(

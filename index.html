@@ -259,6 +259,30 @@
       font-size: 0.95em;
     }
 
+    .answer-body pre {
+      margin: 1em 0;
+      background: rgba(0, 0, 0, 0.28);
+      border-radius: 14px;
+      padding: 14px;
+      overflow-x: auto;
+    }
+
+    .answer-body pre code {
+      background: transparent;
+      padding: 0;
+    }
+
+    .answer-body blockquote {
+      margin: 1em 0;
+      padding-left: 14px;
+      border-left: 3px solid rgba(201, 168, 76, 0.45);
+      color: var(--muted);
+    }
+
+    .answer-body a {
+      color: var(--accent);
+    }
+
     .sources {
       margin-top: 18px;
       display: flex;
@@ -484,9 +508,9 @@
         pageTitle: "MagicBag | 魔法口袋",
         brandEn: "MagicBag",
         brandCn: "魔法口袋",
-        subtitle: "面向纸牌魔术、心灵魔术和表演理论的知识助手。它会检索你的资料库，并给出带来源的回答。",
+        subtitle: "纸牌魔术、心灵魔术和表演理论的知识助手。",
         emptyTitle: "从这些问题开始",
-        emptyDesc: "页面会连接你的 MagicRAG 后端，把回答和来源片段整理成可展开阅读的笔记。",
+        emptyDesc: "点击推荐问题可直接提问，回答会以流式方式呈现，并附上可展开的来源片段。",
         inputPlaceholder: "问一个关于手法、流程或表演理论的问题……",
         send: "发送",
         copy: "复制",
@@ -506,9 +530,9 @@
         pageTitle: "MagicBag | MagicBag",
         brandEn: "MagicBag",
         brandCn: "MagicBag",
-        subtitle: "A knowledge assistant for card magic, mentalism, and performance theory. It searches your library and answers with cited sources.",
+        subtitle: "A knowledge assistant for card magic, mentalism, and performance theory.",
         emptyTitle: "Start with one of these questions",
-        emptyDesc: "The page talks to your MagicRAG backend and turns the answer into a readable note with expandable source snippets.",
+        emptyDesc: "Click a suggested question to send it immediately. Answers render as markdown with a streaming reveal and expandable source snippets.",
         inputPlaceholder: "Ask about a sleight, routine, or performance principle...",
         send: "Send",
         copy: "Copy",
@@ -543,7 +567,14 @@
     }
 
     function renderMarkdown(markdown) {
-      const lines = markdown.replace(/\r/g, "").split("\n");
+      const normalized = markdown.replace(/\r/g, "");
+      const fenced = [];
+      const text = normalized.replace(/```([\s\S]*?)```/g, (_, code) => {
+        const token = "__FENCE_" + fenced.length + "__";
+        fenced.push('<pre><code>' + escapeHtml(code.trim()) + "</code></pre>");
+        return token;
+      });
+      const lines = text.split("\n");
       const blocks = [];
       let paragraph = [];
       let listType = null;
@@ -580,6 +611,21 @@
           continue;
         }
 
+        const quoteMatch = line.match(/^>\s?(.*)$/);
+        if (quoteMatch) {
+          flushParagraph();
+          flushList();
+          blocks.push("<blockquote><p>" + inlineMarkdown(quoteMatch[1]) + "</p></blockquote>");
+          continue;
+        }
+
+        if (/^__FENCE_\d+__$/.test(line)) {
+          flushParagraph();
+          flushList();
+          blocks.push(line);
+          continue;
+        }
+
         const orderedMatch = line.match(/^\d+\.\s+(.*)$/);
         if (orderedMatch) {
           flushParagraph();
@@ -604,14 +650,17 @@
 
       flushParagraph();
       flushList();
-      return blocks.join("");
+      return blocks.join("").replace(/__FENCE_(\d+)__/g, (_, index) => fenced[Number(index)] || "");
     }
 
     function inlineMarkdown(text) {
       const safe = escapeHtml(text);
       return safe
+        .replace(/\[(.+?)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
         .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
         .replace(/__(.+?)__/g, "<strong>$1</strong>")
+        .replace(/\*(.+?)\*/g, "<em>$1</em>")
+        .replace(/_(.+?)_/g, "<em>$1</em>")
         .replace(/`(.+?)`/g, "<code>$1</code>");
     }
 
@@ -679,19 +728,32 @@
       return '<div class="sources">' + items + "</div>";
     }
 
-    function createAssistantMessage(answer, sources) {
+    async function streamAssistantMessage(answer, sources) {
       const card = createMessage(
         "assistant",
         [
           '<div class="answer-card">',
           '<button class="copy-btn" type="button">' + escapeHtml(t("copy")) + "</button>",
-          '<div class="answer-body">' + renderMarkdown(answer) + "</div>",
+          '<div class="answer-body"></div>',
           buildSources(sources),
           "</div>"
         ].join("")
       );
 
+      const body = card.querySelector(".answer-body");
       const copyButton = card.querySelector(".copy-btn");
+      copyButton.disabled = true;
+
+      const total = answer.length;
+      const step = total > 1800 ? 10 : total > 900 ? 6 : 3;
+      const delay = total > 1800 ? 10 : total > 900 ? 14 : 18;
+      for (let index = step; index < total + step; index += step) {
+        body.innerHTML = renderMarkdown(answer.slice(0, index));
+        scrollToBottom();
+        await new Promise((resolve) => window.setTimeout(resolve, delay));
+      }
+
+      copyButton.disabled = false;
       copyButton.addEventListener("click", async () => {
         try {
           await navigator.clipboard.writeText(answer);
@@ -758,7 +820,7 @@
           ? data.results.map((item) => "- " + (item.content || "")).join("\n")
           : t("noAnswer"));
         const sources = data.sources || data.results || [];
-        createAssistantMessage(answer, sources);
+        await streamAssistantMessage(answer, sources);
       } catch (error) {
         removeLoadingMessage();
         createErrorMessage(t("error"));
@@ -777,11 +839,7 @@
         button.className = "example-btn";
         button.type = "button";
         button.textContent = question;
-        button.addEventListener("click", () => {
-          input.value = question;
-          autoResize();
-          input.focus();
-        });
+        button.addEventListener("click", () => ask(question));
         examples.appendChild(button);
       }
     }
