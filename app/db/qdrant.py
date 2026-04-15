@@ -186,3 +186,25 @@ def fetch_source_chunks(source: str, start_chunk: int, end_chunk: int) -> list[A
         filtered_records,
         key=lambda record: int(record.payload.get("chunk_index", 0)),
     )
+
+
+def fetch_all_payload_chunks(batch_size: int = 256) -> list[Any]:
+    """Fetch all point payloads for local lexical fallback ranking."""
+    if not get_qdrant_client().collection_exists(settings.qdrant_collection_name):
+        return []
+
+    client = get_qdrant_client()
+    records: list[Any] = []
+    offset = None
+    while True:
+        batch, offset = client.scroll(
+            collection_name=settings.qdrant_collection_name,
+            limit=batch_size,
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,
+        )
+        records.extend(batch)
+        if offset is None:
+            break
+    return records

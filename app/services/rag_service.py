@@ -17,6 +17,7 @@ from app.db.qdrant import (
     count_points,
     count_points_for_source,
     ensure_collection,
+    fetch_all_payload_chunks,
     fetch_source_chunks,
     query_points,
     upsert_points,
@@ -40,6 +41,35 @@ class RAGService:
     """Service object for RAG workflows."""
 
     MAX_HISTORY_TURNS = 5
+    LEXICAL_STOPWORDS = {
+        "about",
+        "after",
+        "also",
+        "and",
+        "before",
+        "does",
+        "for",
+        "from",
+        "glossary",
+        "have",
+        "into",
+        "method",
+        "methods",
+        "related",
+        "term",
+        "terms",
+        "that",
+        "the",
+        "these",
+        "this",
+        "those",
+        "what",
+        "when",
+        "where",
+        "which",
+        "with",
+        "your",
+    }
 
     QUERY_SYNONYMS = {
         "迫选": "Force",
@@ -628,16 +658,199 @@ class RAGService:
         }
 
     @classmethod
-    def _expand_query(cls, query: str) -> str:
-        """Append canonical English terms for known Chinese glossary entries."""
+    def _query_expansion_terms(cls, query: str) -> list[str]:
+        """Return glossary equivalents that make cross-language retrieval easier."""
         additions: list[str] = []
         lowered = query.lower()
         for zh_term, canonical in cls.QUERY_SYNONYMS.items():
             if zh_term in query and canonical.lower() not in lowered:
                 additions.append(canonical)
+        for canonical, zh_term in cls.TERM_GLOSSARY.items():
+            if canonical.lower() in lowered and zh_term not in query:
+                additions.append(zh_term)
+        return list(dict.fromkeys(additions))
+
+    @classmethod
+    def _expand_query(cls, query: str) -> str:
+        """Append canonical glossary terms for known cross-language entries."""
+        additions = cls._query_expansion_terms(query)
         if not additions:
             return query
         return f"{query}\n\nRelated glossary terms: {', '.join(additions)}"
+
+    @classmethod
+    def _lexical_needles(cls, query: str) -> tuple[list[str], list[str], list[str]]:
+        lexical_query = " ".join([query, *cls._query_expansion_terms(query)])
+        phrases = cls._query_phrases(lexical_query)
+        tokens = [
+            token
+            for token in cls._query_tokens(lexical_query)
+            if token not in cls.LEXICAL_STOPWORDS and not re.search(r"[\u4e00-\u9fff]", token)
+        ]
+        cjk_terms = [
+            term
+            for term in re.findall(r"[\u4e00-\u9fff]{2,}", lexical_query)
+            if term not in {"什么", "哪些", "方法", "怎么", "一下"}
+        ]
+        for zh_term in cls.QUERY_SYNONYMS:
+            if zh_term in lexical_query:
+                cjk_terms.append(zh_term)
+        for zh_term in cls.TERM_GLOSSARY.values():
+            if re.search(r"[\u4e00-\u9fff]", zh_term) and zh_term in lexical_query:
+                cjk_terms.append(zh_term)
+
+        return (
+            list(dict.fromkeys(phrases)),
+            list(dict.fromkeys(tokens)),
+            list(dict.fromkeys(cjk_terms)),
+        )
+
+    @classmethod
+    def _should_run_lexical_search(
+        cls,
+        query: str,
+        vector_results: list[SearchResult],
+    ) -> bool:
+        needles = cls._lexical_needles(query)
+        phrases, tokens, cjk_terms = needles
+        if not any(needles):
+            return False
+
+        has_short_phrase = any(2 <= len(phrase.split()) <= 4 for phrase in phrases)
+        has_short_token_query = 1 <= len(tokens) <= 2
+        known_cjk_terms = {
+            *cls.QUERY_SYNONYMS.keys(),
+            *[
+                term
+                for term in cls.TERM_GLOSSARY.values()
+                if re.search(r"[\u4e00-\u9fff]", term)
+            ],
+        }
+        has_known_cjk_term = any(term in known_cjk_terms for term in cjk_terms)
+        if has_short_phrase or has_short_token_query or has_known_cjk_term:
+            return True
+
+        return not any(cls._lexical_score(needles, result) >= settings.score_threshold for result in vector_results)
+
+    @classmethod
+    def _payload_to_search_result(cls, payload: dict[str, object], score: float) -> SearchResult:
+        source = str(payload.get("source") or "")
+        filename = payload.get("filename")
+        filename_text = str(filename) if filename is not None else None
+        return SearchResult(
+            source=source,
+            score=score,
+            content=str(payload.get("content") or ""),
+            metadata=(
+                cls._reference_metadata(source, filename_text)
+                | {
+                    "chunk_index": payload.get("chunk_index"),
+                }
+            ),
+        )
+
+    @classmethod
+    def _lexical_score(
+        cls,
+        needles: tuple[list[str], list[str], list[str]],
+        result: SearchResult,
+    ) -> float:
+        phrases, tokens, cjk_terms = needles
+        if not phrases and not tokens and not cjk_terms:
+            return 0.0
+
+        title = str(result.metadata.get("title") or "")
+        author = str(result.metadata.get("author") or "")
+        filename = str(result.metadata.get("filename") or result.source)
+        title_haystack = cls._normalized_text(" ".join([title, author, filename, result.source]))
+        content_haystack = cls._normalized_text(result.content)
+
+        raw_score = 0.0
+        for phrase in phrases:
+            if phrase in title_haystack:
+                raw_score += 1.4
+            elif phrase in content_haystack:
+                raw_score += 0.9
+
+        for token in tokens:
+            if token in title_haystack:
+                raw_score += 0.45
+            elif token in content_haystack:
+                raw_score += 0.22
+
+        for term in cjk_terms:
+            normalized_term = cls._normalized_text(term)
+            if normalized_term and normalized_term in title_haystack:
+                raw_score += 0.6
+            elif normalized_term and normalized_term in content_haystack:
+                raw_score += 0.3
+
+        if raw_score <= 0:
+            return 0.0
+        return min(0.99, settings.score_threshold + 0.08 + min(raw_score, 4.0) * 0.1)
+
+    @classmethod
+    def _lexical_search_results(cls, query: str, limit: int) -> list[SearchResult]:
+        needles = cls._lexical_needles(query)
+        if not any(needles):
+            return []
+
+        scored_results: list[SearchResult] = []
+        for record in fetch_all_payload_chunks():
+            payload = record.payload or {}
+            result = cls._payload_to_search_result(payload, 0.0)
+            score = cls._lexical_score(needles, result)
+            if score >= settings.score_threshold:
+                result.score = score
+                scored_results.append(result)
+
+        scored_results.sort(
+            key=lambda item: (
+                item.score,
+                -int(item.metadata.get("chunk_index") or 0),
+            ),
+            reverse=True,
+        )
+        per_source_counts: dict[str, int] = {}
+        diversified: list[SearchResult] = []
+        for result in scored_results:
+            key = cls._source_key(result)
+            if per_source_counts.get(key, 0) >= 2:
+                continue
+            per_source_counts[key] = per_source_counts.get(key, 0) + 1
+            diversified.append(result)
+            if len(diversified) >= limit:
+                break
+        return diversified
+
+    @classmethod
+    def _merge_search_results(
+        cls,
+        vector_results: list[SearchResult],
+        lexical_results: list[SearchResult],
+        limit: int,
+    ) -> list[SearchResult]:
+        merged: dict[tuple[str, object], SearchResult] = {}
+        for result in [*vector_results, *lexical_results]:
+            key = (result.source, result.metadata.get("chunk_index"))
+            existing = merged.get(key)
+            if existing is None or result.score > existing.score:
+                merged[key] = result
+
+        results = list(merged.values())
+        results.sort(key=lambda item: item.score, reverse=True)
+        return results[:limit]
+
+    @classmethod
+    def _embedding_text(cls, source: str, filename: str, chunk: str) -> str:
+        metadata = cls._reference_metadata(source, filename)
+        parts = [
+            f"title: {metadata.get('title') or filename}",
+            f"author: {metadata.get('author') or 'unknown'}",
+            f"file: {filename}",
+            chunk,
+        ]
+        return "\n".join(parts)
 
     @classmethod
     def _term_guide(cls, language: str) -> str:
@@ -789,14 +1002,14 @@ class RAGService:
     @classmethod
     def _max_answer_tokens(cls, question: str, history: list[ChatTurn]) -> int:
         if cls._wants_multiple_items(question) and cls._is_method_question(question):
-            return 1800
+            return settings.answer_max_tokens_multiple_methods
         if cls._is_method_question(question):
-            return 1400
+            return settings.answer_max_tokens_method
         if cls._is_summary_question(question):
-            return 1000
+            return settings.answer_max_tokens_summary
         if cls._should_use_history(question, history):
-            return 800
-        return 900
+            return settings.answer_max_tokens_followup
+        return settings.answer_max_tokens_default
 
     async def ingest_documents(self, payload: IngestRequest) -> IngestResponse:
         """Read source documents, generate embeddings, and upsert vectors."""
@@ -847,7 +1060,7 @@ class RAGService:
                     if indexed_chunks >= len(chunks):
                         continue
                 for chunk_index, chunk in enumerate(chunks):
-                    batch_texts.append(chunk)
+                    batch_texts.append(self._embedding_text(str(path), path.name, chunk))
                     batch_points.append(
                         PointStruct(
                             id=self._build_point_id(str(path), chunk_index),
@@ -911,29 +1124,26 @@ class RAGService:
         vector = (await embed_texts([expanded_query]))[0]
         embedding_time_ms = int((perf_counter() - embedding_started) * 1000)
         vector_search_started = perf_counter()
+        result_limit = payload.top_k or settings.top_k
         points = query_points(
             vector=vector,
-            limit=payload.top_k or settings.top_k,
+            limit=result_limit,
             score_threshold=settings.score_threshold,
         )
-        vector_search_time_ms = int((perf_counter() - vector_search_started) * 1000)
         results = [
-            SearchResult(
-                source=point.payload.get("source", ""),
-                score=point.score or 0.0,
-                content=point.payload.get("content", ""),
-                metadata=(
-                    self._reference_metadata(
-                        point.payload.get("source", ""),
-                        point.payload.get("filename"),
-                    )
-                    | {
-                        "chunk_index": point.payload.get("chunk_index"),
-                    }
-                ),
-            )
+            self._payload_to_search_result(point.payload or {}, point.score or 0.0)
             for point in points
         ]
+        lexical_results = (
+            self._lexical_search_results(
+                expanded_query,
+                limit=max(result_limit, settings.max_context_sources * 4),
+            )
+            if self._should_run_lexical_search(expanded_query, results)
+            else []
+        )
+        results = self._merge_search_results(results, lexical_results, result_limit)
+        vector_search_time_ms = int((perf_counter() - vector_search_started) * 1000)
         return (
             SearchResponse(query=payload.query, results=results),
             embedding_time_ms,
@@ -972,47 +1182,29 @@ class RAGService:
             answer = await complete_chat(
                 system_prompt=(
                     "You are a careful RAG assistant for magic teaching and performance study. "
-                    "Assume the user is asking about lawful entertainment, stagecraft, "
-                    "or consensual performance for magicians. Do not moralize about "
-                    "magic methods. Use only the provided context and do not use "
-                    "outside knowledge or memory. If a title, author, date, or term "
-                    "appears in the context, preserve it exactly as written there. "
-                    "Treat structured source metadata such as file, title, and author "
-                    "as authoritative. If author is unknown in the context, do not "
-                    "guess or substitute one. "
-                    "Do not mention internal retrieval mechanics, vector databases, file "
-                    "storage, chunking, or phrases like 'according to the file/context' "
-                    "unless the user explicitly asks about sources or system behavior. "
-                    "Do not translate or rewrite proper nouns unless the translated "
-                    "form is already present in the context. Never introduce a person, "
-                    "book, method, or recommendation that does not appear in the "
-                    "context. Never merge two different names into one. If your prior "
-                    "knowledge conflicts with the context, trust the context. If the "
-                    "context is insufficient, say that directly. Answer the question "
-                    "completely and in detail based on the provided context. Never tell "
-                    "the user to read the source; synthesize the information and answer directly. "
-                    "If the context contains partial information across multiple passages, combine "
-                    "the relevant pieces into one coherent answer."
+                    "Assume lawful entertainment, stagecraft, or consensual performance. "
+                    "Use only the provided context and do not use outside knowledge or memory. "
+                    "Preserve titles, authors, dates, terms, file, title, and author metadata exactly. "
+                    "If author is unknown in the context, do not guess or substitute one. "
+                    "Do not mention retrieval mechanics, vector databases, file storage, chunking, "
+                    "or phrases like 'according to the file/context' unless asked. "
+                    "Never introduce a person, book, method, or recommendation absent from the context. "
+                    "Never merge different names. If context is insufficient, say so. "
+                    "Answer the question completely and in detail based on the provided context, "
+                    "combining relevant passages into one direct answer."
                 ),
                 user_prompt=(
                     f"Question:\n{payload.question}\n\n"
                     f"{self._history_text(payload.history)}\n\n"
                     f"Context:\n{self._format_context(merged_results)}\n\n"
                     f"Write a direct, natural answer in {answer_language} for a magician "
-                    "studying performance methods. The UI already shows the references "
-                    "below the answer, so do not mention raw file names, internal files, "
-                    "or say 'according to the file/context/database'. Answer only the "
-                    "user's question and do not add extra recommendations "
-                    "or related people unless explicitly asked. Do not invent or substitute "
-                    "a different author, title, or book. If the context names the source "
-                    "file, title, or author, prefer those exact values. If the context does "
-                    "not provide an author, say that the provided excerpt does not identify "
-                    "the author instead of guessing. If the answer language is Chinese, "
-                    "use natural, idiomatic Simplified Chinese instead of literal translation, "
-                    "but keep names and titles exactly as they appear in the context. "
-                    "When the context contains method steps, procedure details, or handling "
-                    "nuance, include those practical details instead of only giving a high-level summary. "
-                    "The context may be long because this is a magic teaching workflow; extract the most useful details and explain them clearly."
+                    "studying performance methods. The UI already shows the references below the answer, "
+                    "so do not mention raw file names, internal files, or say 'according to the file/context/database'. "
+                    "Answer only the user's question and do not add extra recommendations or related people. "
+                    "Do not invent or substitute a different author, title, or book. "
+                    "If the context does not provide an author, say that the provided excerpt does not identify the author. "
+                    "If the answer language is Chinese, use natural, idiomatic Simplified Chinese, "
+                    "while keeping names and titles exactly as written. Include method steps and handling nuance when present."
                     f"\n\nAnswer guidance:\n{self._answer_guidance(payload.question, payload.language, payload.history)}"
                     f"\n\nStyle guidance:\n{self._question_shape_guidance(payload.question, payload.language)}"
                     f"{self._relevant_term_guide(payload.language, payload.question, merged_results)}"

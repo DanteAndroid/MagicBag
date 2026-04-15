@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     query_chunk_window: int = 2
     max_context_sources: int = 3
     max_chunks_per_source: int = 6
+    answer_max_tokens_default: int = 900
+    answer_max_tokens_followup: int = 800
+    answer_max_tokens_summary: int = 1000
+    answer_max_tokens_method: int = 1400
+    answer_max_tokens_multiple_methods: int = 1800
 
 
 @lru_cache(maxsize=1)
