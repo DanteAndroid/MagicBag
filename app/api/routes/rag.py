@@ -5,7 +5,10 @@ service classes where you can implement actual ingestion, retrieval, and LLM
 orchestration later.
 """
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 
 from app.schemas.rag import (
     IngestRequest,
@@ -51,3 +54,41 @@ async def answer_question(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+
+
+@router.post("/query/stream", summary="Answer question with streaming")
+async def answer_question_stream(
+    payload: QueryRequest,
+    service: RAGService = Depends(get_rag_service),
+) -> StreamingResponse:
+    """Answer a question with RAG and stream model deltas as SSE."""
+    if not payload.question.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Question cannot be empty.",
+        )
+
+    async def event_stream():
+        try:
+            async for event in service.answer_question_stream(payload):
+                event_type = str(event.get("type", "message"))
+                data = json.dumps(event, ensure_ascii=False)
+                yield f"event: {event_type}\ndata: {data}\n\n"
+        except Exception as exc:
+            data = json.dumps(
+                {
+                    "type": "error",
+                    "detail": str(exc),
+                },
+                ensure_ascii=False,
+            )
+            yield f"event: error\ndata: {data}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

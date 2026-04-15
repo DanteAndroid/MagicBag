@@ -1,5 +1,7 @@
 """DeepSeek-compatible API client helpers."""
 
+from collections.abc import AsyncIterator
+
 from openai import AsyncOpenAI
 
 from app.core.config import settings
@@ -63,3 +65,28 @@ async def complete_chat(
         )
 
     return "".join(answer_parts).strip()
+
+
+async def stream_chat(
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int | None = None,
+) -> AsyncIterator[str]:
+    """Generate a streaming chat completion."""
+    client = get_deepseek_client()
+    stream = await client.chat.completions.create(
+        model=settings.deepseek_chat_model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.0,
+        max_tokens=max_tokens,
+        stream=True,
+    )
+    async for event in stream:
+        if not event.choices:
+            continue
+        chunk = event.choices[0].delta.content or ""
+        if chunk:
+            yield chunk

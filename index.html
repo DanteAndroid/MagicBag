@@ -571,8 +571,7 @@
   </div>
 
   <script>
-    const FALLBACK_API_ENDPOINT = "https://magicbag-production.up.railway.app/api/v1/rag/query";
-    const API_ENDPOINT = window.location.protocol === "file:" ? FALLBACK_API_ENDPOINT : "/api/v1/rag/query";
+    const API_STREAM_ENDPOINT = window.location.protocol === "file:" ? "" : "/api/v1/rag/query/stream";
     const chat = document.getElementById("chat");
     const emptyState = document.getElementById("emptyState");
     const composer = document.getElementById("composer");
@@ -954,29 +953,11 @@
       return () => clearInterval(timer);
     }
 
-    async function streamAssistantMessage(question, answer, sources, timing, options = {}) {
-      const { targetMessage = null, replaceLastAssistantHistory = false } = options;
-      const card = targetMessage || createMessage("assistant", buildAssistantShell(sources));
-      if (targetMessage) {
-        card.innerHTML = buildAssistantShell(sources);
-        scrollToBottom();
-      }
-
-      const body = card.querySelector(".answer-body");
+    function finishAssistantMessage(card, question, answer, timing, options = {}) {
+      const { replaceLastAssistantHistory = false } = options;
       const copyButton = card.querySelector(".copy-btn");
       const retryButton = card.querySelector(".retry-btn");
       const timingNode = card.querySelector(".answer-timing");
-      copyButton.disabled = true;
-      retryButton.disabled = true;
-
-      const total = answer.length;
-      const step = total > 1800 ? 36 : total > 900 ? 22 : 12;
-      const delay = total > 1800 ? 2 : total > 900 ? 4 : 7;
-      for (let index = step; index < total + step; index += step) {
-        body.innerHTML = renderMarkdown(answer.slice(0, index));
-        scrollToBottom();
-        await new Promise((resolve) => window.setTimeout(resolve, delay));
-      }
 
       copyButton.disabled = false;
       retryButton.disabled = false;
@@ -1046,6 +1027,139 @@
       );
     }
 
+    function parseSseEvents(buffer, onEvent) {
+      let cursor = 0;
+      while (true) {
+        const boundary = buffer.indexOf("\n\n", cursor);
+        if (boundary === -1) break;
+        const block = buffer.slice(cursor, boundary);
+        cursor = boundary + 2;
+        let eventName = "message";
+        const dataLines = [];
+        for (const line of block.split("\n")) {
+          if (line.startsWith("event:")) {
+            eventName = line.slice(6).trim();
+          } else if (line.startsWith("data:")) {
+            dataLines.push(line.slice(5).trimStart());
+          }
+        }
+        if (!dataLines.length) continue;
+        onEvent(eventName, JSON.parse(dataLines.join("\n")));
+      }
+      return buffer.slice(cursor);
+    }
+
+    async function askStreaming(question, options = {}) {
+      const { retryTarget = null, requestStartedAt = performance.now() } = options;
+      if (!API_STREAM_ENDPOINT) {
+        throw new Error("Streaming endpoint is unavailable.");
+      }
+
+      let stopInlineThinking = options.stopInlineThinking || null;
+      const response = await fetch(API_STREAM_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "text/event-stream"
+        },
+        body: JSON.stringify({
+          question,
+          top_k: 3,
+          language,
+          history: conversationHistory.slice(0, -1)
+        })
+      });
+
+      if (!response.ok || !response.body) {
+        throw new Error("Streaming request failed with status " + response.status);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let card = retryTarget;
+      let body = null;
+      let answer = "";
+      let metadata = {};
+      let hasStartedAnswer = false;
+
+      const ensureStreamingCard = () => {
+        if (body) return;
+        if (card) {
+          if (stopInlineThinking) {
+            stopInlineThinking();
+            stopInlineThinking = null;
+          }
+          card.innerHTML = buildAssistantShell([]);
+          scrollToBottom();
+        } else {
+          removeLoadingMessage();
+          card = createMessage("assistant", buildAssistantShell([]));
+        }
+        body = card.querySelector(".answer-body");
+        card.querySelector(".copy-btn").disabled = true;
+        card.querySelector(".retry-btn").disabled = true;
+      };
+
+      const attachSources = () => {
+        const answerCard = card?.querySelector(".answer-card");
+        if (!answerCard || answerCard.querySelector(".sources")) return;
+        const sourcesHtml = buildSources(metadata.sources || []);
+        if (sourcesHtml) {
+          answerCard.insertAdjacentHTML("beforeend", sourcesHtml);
+        }
+      };
+
+      const handleEvent = (eventName, event) => {
+        if (eventName === "error" || event.type === "error") {
+          throw new Error(event.detail || "Streaming request failed.");
+        }
+
+        if (event.type === "metadata") {
+          metadata = event;
+          return;
+        }
+
+        if (event.type === "delta") {
+          ensureStreamingCard();
+          hasStartedAnswer = true;
+          answer += event.content || "";
+          body.innerHTML = renderMarkdown(answer);
+          scrollToBottom();
+          return;
+        }
+
+        if (event.type === "done") {
+          if (!hasStartedAnswer) {
+            ensureStreamingCard();
+          }
+          answer = event.answer || answer;
+          body.innerHTML = renderMarkdown(answer || t("noAnswer"));
+          attachSources();
+          finishAssistantMessage(card, question, answer || t("noAnswer"), {
+            totalTimeMs: typeof event.total_time_ms === "number"
+              ? event.total_time_ms
+              : Math.round(performance.now() - requestStartedAt),
+            embeddingTimeMs: metadata.embedding_time_ms,
+            vectorSearchTimeMs: metadata.vector_search_time_ms,
+            retrievalTimeMs: metadata.retrieval_time_ms,
+            generationTimeMs: event.generation_time_ms
+          }, {
+            replaceLastAssistantHistory: Boolean(retryTarget)
+          });
+        }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true }).replace(/\r/g, "");
+        buffer = parseSseEvents(buffer, handleEvent);
+      }
+      buffer += decoder.decode().replace(/\r/g, "");
+      parseSseEvents(buffer, handleEvent);
+    }
+
     async function ask(question, options = {}) {
       const { retryTarget = null } = options;
       const trimmed = question.trim();
@@ -1068,45 +1182,10 @@
       const requestStartedAt = performance.now();
 
       try {
-        const response = await fetch(API_ENDPOINT, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            question: trimmed,
-            top_k: 3,
-            language,
-            history: conversationHistory.slice(0, -1)
-          })
-        });
-
-        if (!response.ok) {
-          throw new Error("Request failed with status " + response.status);
-        }
-
-        const data = await response.json();
-        if (stopInlineThinking) {
-          stopInlineThinking();
-        } else {
-          removeLoadingMessage();
-        }
-
-        const answer = data.answer || (Array.isArray(data.results) && data.results.length
-          ? data.results.map((item) => "- " + (item.content || "")).join("\n")
-          : t("noAnswer"));
-        const sources = data.sources || data.results || [];
-        await streamAssistantMessage(trimmed, answer, sources, {
-          totalTimeMs: typeof data.total_time_ms === "number"
-            ? data.total_time_ms
-            : Math.round(performance.now() - requestStartedAt),
-          embeddingTimeMs: data.embedding_time_ms,
-          vectorSearchTimeMs: data.vector_search_time_ms,
-          retrievalTimeMs: data.retrieval_time_ms,
-          generationTimeMs: data.generation_time_ms
-        }, {
-          targetMessage: retryTarget,
-          replaceLastAssistantHistory: Boolean(retryTarget)
+        await askStreaming(trimmed, {
+          retryTarget,
+          requestStartedAt,
+          stopInlineThinking
         });
       } catch (error) {
         if (stopInlineThinking) {

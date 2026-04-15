@@ -12,6 +12,7 @@ async def test_ingest_documents_upserts_vectors(monkeypatch: pytest.MonkeyPatch,
     source.write_text("alpha beta gamma", encoding="utf-8")
 
     monkeypatch.setattr("app.services.rag_service.settings.rag_documents_dir", tmp_path)
+    monkeypatch.setattr("app.services.rag_service.settings.rag_documents_dir", tmp_path)
     monkeypatch.setattr("app.services.rag_service.settings.deepseek_api_key", "key")
     monkeypatch.setattr("app.services.rag_service.settings.qdrant_url", "https://example.com")
     monkeypatch.setattr("app.services.rag_service.settings.qdrant_api_key", "secret")
@@ -33,12 +34,12 @@ async def test_ingest_documents_upserts_vectors(monkeypatch: pytest.MonkeyPatch,
 
 
 @pytest.mark.asyncio
-async def test_semantic_search_returns_payload_results(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_semantic_search_returns_payload_results(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("app.services.rag_service.settings.rag_documents_dir", tmp_path)
     monkeypatch.setattr("app.services.rag_service.settings.deepseek_api_key", "key")
     monkeypatch.setattr("app.services.rag_service.settings.qdrant_url", "https://example.com")
     monkeypatch.setattr("app.services.rag_service.settings.qdrant_api_key", "secret")
     monkeypatch.setattr("app.services.rag_service.embed_texts", lambda texts: _embed(texts))
-    monkeypatch.setattr("app.services.rag_service.fetch_all_payload_chunks", lambda: [])
     monkeypatch.setattr(
         "app.services.rag_service.query_points",
         lambda vector, limit, score_threshold: [
@@ -62,12 +63,12 @@ async def test_semantic_search_returns_payload_results(monkeypatch: pytest.Monke
 
 
 @pytest.mark.asyncio
-async def test_semantic_search_returns_debug_views(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_semantic_search_returns_debug_views(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("app.services.rag_service.settings.rag_documents_dir", tmp_path)
     monkeypatch.setattr("app.services.rag_service.settings.deepseek_api_key", "key")
     monkeypatch.setattr("app.services.rag_service.settings.qdrant_url", "https://example.com")
     monkeypatch.setattr("app.services.rag_service.settings.qdrant_api_key", "secret")
     monkeypatch.setattr("app.services.rag_service.embed_texts", lambda texts: _embed(texts))
-    monkeypatch.setattr("app.services.rag_service.fetch_all_payload_chunks", lambda: [])
     monkeypatch.setattr(
         "app.services.rag_service.query_points",
         lambda vector, limit, score_threshold: [
@@ -97,12 +98,12 @@ async def test_semantic_search_returns_debug_views(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
-async def test_semantic_search_extracts_reference_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_semantic_search_extracts_reference_metadata(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("app.services.rag_service.settings.rag_documents_dir", tmp_path)
     monkeypatch.setattr("app.services.rag_service.settings.deepseek_api_key", "key")
     monkeypatch.setattr("app.services.rag_service.settings.qdrant_url", "https://example.com")
     monkeypatch.setattr("app.services.rag_service.settings.qdrant_api_key", "secret")
     monkeypatch.setattr("app.services.rag_service.embed_texts", lambda texts: _embed(texts))
-    monkeypatch.setattr("app.services.rag_service.fetch_all_payload_chunks", lambda: [])
     monkeypatch.setattr(
         "app.services.rag_service.query_points",
         lambda vector, limit, score_threshold: [
@@ -134,19 +135,19 @@ def test_reference_metadata_extracts_numbered_title_and_author() -> None:
 
 
 @pytest.mark.asyncio
-async def test_semantic_search_expands_glossary_terms(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_semantic_search_expands_glossary_terms(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     captured = {}
 
     async def _capture_embed(texts: list[str]) -> list[list[float]]:
         captured["query"] = texts[0]
         return [[1.0, 0.0, 1.0]]
 
+    monkeypatch.setattr("app.services.rag_service.settings.rag_documents_dir", tmp_path)
     monkeypatch.setattr("app.services.rag_service.settings.deepseek_api_key", "key")
     monkeypatch.setattr("app.services.rag_service.settings.qdrant_url", "https://example.com")
     monkeypatch.setattr("app.services.rag_service.settings.qdrant_api_key", "secret")
     monkeypatch.setattr("app.services.rag_service.embed_texts", _capture_embed)
     monkeypatch.setattr("app.services.rag_service.query_points", lambda vector, limit, score_threshold: [])
-    monkeypatch.setattr("app.services.rag_service.fetch_all_payload_chunks", lambda: [])
 
     await RAGService().semantic_search(SearchRequest(query="什么是双关语？"))
 
@@ -154,37 +155,24 @@ async def test_semantic_search_expands_glossary_terms(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
-async def test_semantic_search_uses_lexical_fallback_for_named_title(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_semantic_search_uses_lexical_fallback_for_named_title(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "48 Which Hand Fraser Parker.md"
+    source.write_text(
+        "The spectator hides a coin in one hand. The performer identifies which hand holds it.",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("app.services.rag_service.settings.rag_documents_dir", tmp_path)
     monkeypatch.setattr("app.services.rag_service.settings.deepseek_api_key", "key")
     monkeypatch.setattr("app.services.rag_service.settings.qdrant_url", "https://example.com")
     monkeypatch.setattr("app.services.rag_service.settings.qdrant_api_key", "secret")
     monkeypatch.setattr("app.services.rag_service.embed_texts", lambda texts: _embed(texts))
     monkeypatch.setattr("app.services.rag_service.query_points", lambda vector, limit, score_threshold: [])
-    monkeypatch.setattr(
-        "app.services.rag_service.fetch_all_payload_chunks",
-        lambda: [
-            _Point(
-                score=0.0,
-                payload={
-                    "source": "/tmp/48 Which Hand Fraser Parker.md",
-                    "filename": "48 Which Hand Fraser Parker.md",
-                    "chunk_index": 0,
-                    "content": "The spectator hides a coin in one hand.",
-                },
-            ),
-            _Point(
-                score=0.0,
-                payload={
-                    "source": "/tmp/Strong Magic.txt",
-                    "filename": "Strong Magic.txt",
-                    "chunk_index": 0,
-                    "content": "performance theory",
-                },
-            ),
-        ],
-    )
 
-    result = await RAGService().semantic_search(SearchRequest(query="which hand"))
+    result = await RAGService().semantic_search(SearchRequest(query="which hand手法"))
 
     assert len(result.results) == 1
     assert result.results[0].metadata["title"] == "Which Hand"
@@ -193,40 +181,28 @@ async def test_semantic_search_uses_lexical_fallback_for_named_title(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_semantic_search_uses_lexical_fallback_for_peek(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_semantic_search_uses_lexical_fallback_for_peek(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "mentalism.md"
+    source.write_text(
+        "A peek lets the performer secretly read the written information.",
+        encoding="utf-8",
+    )
+    (tmp_path / "cards.md").write_text("false shuffle and controls", encoding="utf-8")
+
+    monkeypatch.setattr("app.services.rag_service.settings.rag_documents_dir", tmp_path)
     monkeypatch.setattr("app.services.rag_service.settings.deepseek_api_key", "key")
     monkeypatch.setattr("app.services.rag_service.settings.qdrant_url", "https://example.com")
     monkeypatch.setattr("app.services.rag_service.settings.qdrant_api_key", "secret")
     monkeypatch.setattr("app.services.rag_service.embed_texts", lambda texts: _embed(texts))
     monkeypatch.setattr("app.services.rag_service.query_points", lambda vector, limit, score_threshold: [])
-    monkeypatch.setattr(
-        "app.services.rag_service.fetch_all_payload_chunks",
-        lambda: [
-            _Point(
-                score=0.0,
-                payload={
-                    "source": "/tmp/mentalism.md",
-                    "filename": "mentalism.md",
-                    "chunk_index": 3,
-                    "content": "A peek lets the performer secretly read the written information.",
-                },
-            ),
-            _Point(
-                score=0.0,
-                payload={
-                    "source": "/tmp/cards.md",
-                    "filename": "cards.md",
-                    "chunk_index": 0,
-                    "content": "false shuffle and controls",
-                },
-            ),
-        ],
-    )
 
     result = await RAGService().semantic_search(SearchRequest(query="peek"))
 
     assert len(result.results) == 1
-    assert result.results[0].source == "/tmp/mentalism.md"
+    assert result.results[0].source == str(source)
     assert "secretly read" in result.results[0].content
     assert result.results[0].score >= 0.45
 
@@ -281,6 +257,48 @@ async def test_answer_question_uses_rag_context(monkeypatch: pytest.MonkeyPatch)
     assert len(result.debug_selected_results) == 2
     assert len(result.debug_expanded_results) == 1
     assert "[Excerpt 1]" in result.debug_expanded_results[0].content
+
+
+@pytest.mark.asyncio
+async def test_answer_question_stream_yields_metadata_deltas_and_done(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _stream_chat(system_prompt: str, user_prompt: str, max_tokens: int | None = None):
+        assert "Context:" in user_prompt
+        assert max_tokens is not None
+        yield "rag "
+        yield "answer"
+
+    monkeypatch.setattr(
+        "app.services.rag_service.fetch_source_chunks",
+        lambda source, start, end: [
+            _Point(
+                score=0.0,
+                payload={"chunk_index": 0, "content": "alpha beta gamma"},
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        RAGService,
+        "_semantic_search_with_timings",
+        lambda self, payload: _search_response_with_timings(),
+    )
+    monkeypatch.setattr("app.services.rag_service.stream_chat", _stream_chat)
+
+    events = [
+        event
+        async for event in RAGService().answer_question_stream(
+            QueryRequest(question="ignored", top_k=3, language="en")
+        )
+    ]
+
+    assert [event["type"] for event in events] == ["metadata", "delta", "delta", "done"]
+    assert events[0]["used_rag"] is True
+    assert events[0]["fallback_used"] is False
+    assert events[0]["sources"]
+    assert events[1]["content"] == "rag "
+    assert events[2]["content"] == "answer"
+    assert events[3]["answer"] == "rag answer"
+    assert events[3]["generation_time_ms"] is not None
+    assert events[3]["total_time_ms"] is not None
 
 
 @pytest.mark.asyncio

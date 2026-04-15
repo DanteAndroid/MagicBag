@@ -5,6 +5,7 @@ assembly, and LLM fallback behavior.
 """
 
 from functools import lru_cache
+from collections.abc import AsyncIterator
 from pathlib import Path
 import re
 from time import perf_counter
@@ -17,12 +18,11 @@ from app.db.qdrant import (
     count_points,
     count_points_for_source,
     ensure_collection,
-    fetch_all_payload_chunks,
     fetch_source_chunks,
     query_points,
     upsert_points,
 )
-from app.llm.deepseek import complete_chat, embed_texts
+from app.llm.deepseek import complete_chat, embed_texts, stream_chat
 from app.schemas.rag import (
     ChatTurn,
     IngestRequest,
@@ -34,7 +34,7 @@ from app.schemas.rag import (
     SearchResult,
 )
 from app.schemas.stats import StatsResponse
-from app.services.document_loader import chunk_document, discover_documents, split_into_sentences
+from app.services.document_loader import chunk_document, chunk_text, discover_documents, read_document, split_into_sentences
 
 
 class RAGService:
@@ -503,6 +503,10 @@ class RAGService:
 
         for result in merged_results:
             source = result.source
+            if result.metadata.get("local_fallback"):
+                expanded_results.append(result)
+                continue
+
             raw_indexes = [
                 item.metadata.get("chunk_index")
                 for item in results
@@ -790,19 +794,103 @@ class RAGService:
         return min(0.99, settings.score_threshold + 0.08 + min(raw_score, 4.0) * 0.1)
 
     @classmethod
-    def _lexical_search_results(cls, query: str, limit: int) -> list[SearchResult]:
+    def _local_lexical_search_results(cls, query: str, limit: int) -> list[SearchResult]:
         needles = cls._lexical_needles(query)
+        phrases, tokens, cjk_terms = needles
         if not any(needles):
             return []
 
+        matched_files: list[tuple[float, Path]] = []
+        for path in discover_documents(settings.rag_documents_dir):
+            metadata = cls._reference_metadata(str(path), path.name)
+            filename_haystack = cls._normalized_text(
+                " ".join(
+                    [
+                        path.name,
+                        str(metadata.get("title") or ""),
+                        str(metadata.get("author") or ""),
+                    ]
+                )
+            )
+            raw_score = 0.0
+            for phrase in phrases:
+                if phrase in filename_haystack:
+                    raw_score += 2.4
+            for token in tokens:
+                if token in filename_haystack:
+                    raw_score += 0.5
+            for term in cjk_terms:
+                normalized_term = cls._normalized_text(term)
+                if normalized_term and normalized_term in filename_haystack:
+                    raw_score += 0.3
+            if raw_score > 0:
+                matched_files.append((raw_score, path))
+
+        matched_files.sort(key=lambda item: item[0], reverse=True)
         scored_results: list[SearchResult] = []
-        for record in fetch_all_payload_chunks():
-            payload = record.payload or {}
-            result = cls._payload_to_search_result(payload, 0.0)
-            score = cls._lexical_score(needles, result)
-            if score >= settings.score_threshold:
-                result.score = score
-                scored_results.append(result)
+        for raw_score, path in matched_files[: max(1, settings.max_context_sources)]:
+            try:
+                chunks = chunk_document(path)
+            except Exception:
+                continue
+
+            source = str(path)
+            metadata = cls._reference_metadata(source, path.name)
+            score = min(0.99, settings.score_threshold + 0.25 + min(raw_score, 4.0) * 0.05)
+            for chunk_index, chunk in enumerate(chunks[: settings.max_chunks_per_source]):
+                scored_results.append(
+                    SearchResult(
+                        source=source,
+                        score=score,
+                        content=chunk,
+                        metadata=metadata | {"chunk_index": chunk_index, "local_fallback": True},
+                    )
+                )
+                if len(scored_results) >= limit:
+                    break
+            if len(scored_results) >= limit:
+                break
+
+        if scored_results:
+            return scored_results[:limit]
+
+        lightweight_suffixes = {".md", ".markdown", ".txt", ".html", ".htm"}
+        content_needles = [*phrases, *tokens]
+        for path in discover_documents(settings.rag_documents_dir):
+            if path.suffix.lower() not in lightweight_suffixes:
+                continue
+            try:
+                chunks = chunk_text(read_document(path))
+            except Exception:
+                continue
+
+            source = str(path)
+            metadata = cls._reference_metadata(source, path.name)
+            for chunk_index, chunk in enumerate(chunks):
+                haystack = cls._normalized_text(chunk)
+                raw_score = 0.0
+                for phrase in phrases:
+                    if phrase in haystack:
+                        raw_score += 1.0
+                for token in tokens:
+                    if token in haystack:
+                        raw_score += 0.35
+                for term in cjk_terms:
+                    normalized_term = cls._normalized_text(term)
+                    if normalized_term and normalized_term in haystack:
+                        raw_score += 0.25
+                if raw_score <= 0:
+                    continue
+
+                score = min(0.92, settings.score_threshold + 0.1 + min(raw_score, 3.0) * 0.08)
+                scored_results.append(
+                    SearchResult(
+                        source=source,
+                        score=score,
+                        content=chunk,
+                        metadata=metadata | {"chunk_index": chunk_index, "local_fallback": True},
+                    )
+                )
 
         scored_results.sort(
             key=lambda item: (
@@ -811,17 +899,7 @@ class RAGService:
             ),
             reverse=True,
         )
-        per_source_counts: dict[str, int] = {}
-        diversified: list[SearchResult] = []
-        for result in scored_results:
-            key = cls._source_key(result)
-            if per_source_counts.get(key, 0) >= 2:
-                continue
-            per_source_counts[key] = per_source_counts.get(key, 0) + 1
-            diversified.append(result)
-            if len(diversified) >= limit:
-                break
-        return diversified
+        return scored_results[:limit]
 
     @classmethod
     def _merge_search_results(
@@ -1011,6 +1089,60 @@ class RAGService:
             return settings.answer_max_tokens_followup
         return settings.answer_max_tokens_default
 
+    @classmethod
+    def _rag_prompts(
+        cls,
+        payload: QueryRequest,
+        answer_language: str,
+        merged_results: list[SearchResult],
+    ) -> tuple[str, str, int]:
+        system_prompt = (
+            "You are a careful RAG assistant for magic teaching and performance study. "
+            "Assume lawful entertainment, stagecraft, or consensual performance. "
+            "Use only the provided context and do not use outside knowledge or memory. "
+            "Preserve titles, authors, dates, terms, file, title, and author metadata exactly. "
+            "If author is unknown in the context, do not guess or substitute one. "
+            "Do not mention retrieval mechanics, vector databases, file storage, chunking, "
+            "or phrases like 'according to the file/context' unless asked. "
+            "Never introduce a person, book, method, or recommendation absent from the context. "
+            "Never merge different names. If context is insufficient, say so. "
+            "Answer the question completely and in detail based on the provided context, "
+            "combining relevant passages into one direct answer."
+        )
+        user_prompt = (
+            f"Question:\n{payload.question}\n\n"
+            f"{cls._history_text(payload.history)}\n\n"
+            f"Context:\n{cls._format_context(merged_results)}\n\n"
+            f"Write a direct, natural answer in {answer_language} for a magician "
+            "studying performance methods. The UI already shows the references below the answer, "
+            "so do not mention raw file names, internal files, or say 'according to the file/context/database'. "
+            "Answer only the user's question and do not add extra recommendations or related people. "
+            "Do not invent or substitute a different author, title, or book. "
+            "If the context does not provide an author, say that the provided excerpt does not identify the author. "
+            "If the answer language is Chinese, use natural, idiomatic Simplified Chinese, "
+            "while keeping names and titles exactly as written. Include method steps and handling nuance when present."
+            f"\n\nAnswer guidance:\n{cls._answer_guidance(payload.question, payload.language, payload.history)}"
+            f"\n\nStyle guidance:\n{cls._question_shape_guidance(payload.question, payload.language)}"
+            f"{cls._relevant_term_guide(payload.language, payload.question, merged_results)}"
+        )
+        return system_prompt, user_prompt, cls._max_answer_tokens(payload.question, payload.history)
+
+    @classmethod
+    def _fallback_prompts(cls, payload: QueryRequest) -> tuple[str, str, int]:
+        return (
+            (
+                "You are a helpful assistant for magic performance study. Assume the "
+                "user is asking about lawful entertainment, stagecraft, or consensual "
+                "performance for magicians. Do not refuse simply because a method "
+                "involves deception as part of stage magic. Answer directly in "
+                f"{cls._language_name(payload.language)} and, if uncertain, say so."
+            ),
+            "\n\n".join(
+                part for part in [cls._history_text(payload.history), f"Question:\n{payload.question}"] if part
+            ),
+            600,
+        )
+
     async def ingest_documents(self, payload: IngestRequest) -> IngestResponse:
         """Read source documents, generate embeddings, and upsert vectors."""
         error = self._require_ingest_dependencies()
@@ -1135,7 +1267,7 @@ class RAGService:
             for point in points
         ]
         lexical_results = (
-            self._lexical_search_results(
+            self._local_lexical_search_results(
                 expanded_query,
                 limit=max(result_limit, settings.max_context_sources * 4),
             )
@@ -1178,38 +1310,16 @@ class RAGService:
                 payload.history,
                 expanded_results,
             )
+            system_prompt, user_prompt, max_tokens = self._rag_prompts(
+                payload,
+                answer_language,
+                merged_results,
+            )
             generation_started = perf_counter()
             answer = await complete_chat(
-                system_prompt=(
-                    "You are a careful RAG assistant for magic teaching and performance study. "
-                    "Assume lawful entertainment, stagecraft, or consensual performance. "
-                    "Use only the provided context and do not use outside knowledge or memory. "
-                    "Preserve titles, authors, dates, terms, file, title, and author metadata exactly. "
-                    "If author is unknown in the context, do not guess or substitute one. "
-                    "Do not mention retrieval mechanics, vector databases, file storage, chunking, "
-                    "or phrases like 'according to the file/context' unless asked. "
-                    "Never introduce a person, book, method, or recommendation absent from the context. "
-                    "Never merge different names. If context is insufficient, say so. "
-                    "Answer the question completely and in detail based on the provided context, "
-                    "combining relevant passages into one direct answer."
-                ),
-                user_prompt=(
-                    f"Question:\n{payload.question}\n\n"
-                    f"{self._history_text(payload.history)}\n\n"
-                    f"Context:\n{self._format_context(merged_results)}\n\n"
-                    f"Write a direct, natural answer in {answer_language} for a magician "
-                    "studying performance methods. The UI already shows the references below the answer, "
-                    "so do not mention raw file names, internal files, or say 'according to the file/context/database'. "
-                    "Answer only the user's question and do not add extra recommendations or related people. "
-                    "Do not invent or substitute a different author, title, or book. "
-                    "If the context does not provide an author, say that the provided excerpt does not identify the author. "
-                    "If the answer language is Chinese, use natural, idiomatic Simplified Chinese, "
-                    "while keeping names and titles exactly as written. Include method steps and handling nuance when present."
-                    f"\n\nAnswer guidance:\n{self._answer_guidance(payload.question, payload.language, payload.history)}"
-                    f"\n\nStyle guidance:\n{self._question_shape_guidance(payload.question, payload.language)}"
-                    f"{self._relevant_term_guide(payload.language, payload.question, merged_results)}"
-                ),
-                max_tokens=self._max_answer_tokens(payload.question, payload.history),
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=max_tokens,
             )
             generation_time_ms = int((perf_counter() - generation_started) * 1000)
             return QueryResponse(
@@ -1229,18 +1339,11 @@ class RAGService:
             )
 
         generation_started = perf_counter()
+        system_prompt, user_prompt, max_tokens = self._fallback_prompts(payload)
         fallback_answer = await complete_chat(
-            system_prompt=(
-                "You are a helpful assistant for magic performance study. Assume the "
-                "user is asking about lawful entertainment, stagecraft, or consensual "
-                "performance for magicians. Do not refuse simply because a method "
-                "involves deception as part of stage magic. Answer directly in "
-                f"{self._language_name(payload.language)} and, if uncertain, say so."
-            ),
-            user_prompt="\n\n".join(
-                part for part in [self._history_text(payload.history), f"Question:\n{payload.question}"] if part
-            ),
-            max_tokens=600,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_tokens=max_tokens,
         )
         generation_time_ms = int((perf_counter() - generation_started) * 1000)
         return QueryResponse(
@@ -1258,6 +1361,86 @@ class RAGService:
             debug_selected_results=[],
             debug_expanded_results=[],
         )
+
+    async def answer_question_stream(self, payload: QueryRequest) -> AsyncIterator[dict[str, object]]:
+        """Answer a question with RAG and stream model deltas."""
+        if not payload.question.strip():
+            raise ValueError("Question cannot be empty.")
+
+        request_started = perf_counter()
+        search_response, embedding_time_ms, vector_search_time_ms = await self._semantic_search_with_timings(
+            SearchRequest(
+                query=self._build_search_query(payload.question, payload.history),
+                top_k=payload.top_k or settings.top_k,
+            )
+        )
+        retrieval_time_ms = embedding_time_ms + vector_search_time_ms
+        strong_results = [
+            result
+            for result in search_response.results
+            if result.score >= settings.score_threshold
+        ]
+
+        if strong_results:
+            selected_results = self._select_context_results(payload.question, strong_results, payload.history)
+            expanded_results = self._expand_results_with_neighbors(selected_results)
+            merged_results = self._compress_results_for_prompt(
+                payload.question,
+                payload.history,
+                expanded_results,
+            )
+            system_prompt, user_prompt, max_tokens = self._rag_prompts(
+                payload,
+                self._language_name(payload.language),
+                merged_results,
+            )
+            sources = merged_results
+            used_rag = True
+            fallback_used = False
+            debug_selected_results = selected_results if payload.debug else []
+            debug_expanded_results = expanded_results if payload.debug else []
+        else:
+            system_prompt, user_prompt, max_tokens = self._fallback_prompts(payload)
+            sources = search_response.results
+            used_rag = False
+            fallback_used = True
+            debug_selected_results = []
+            debug_expanded_results = []
+
+        yield {
+            "type": "metadata",
+            "question": payload.question,
+            "used_rag": used_rag,
+            "fallback_used": fallback_used,
+            "sources": [source.model_dump() for source in sources],
+            "embedding_time_ms": embedding_time_ms,
+            "vector_search_time_ms": vector_search_time_ms,
+            "retrieval_time_ms": retrieval_time_ms,
+            "debug_results": [result.model_dump() for result in search_response.results] if payload.debug else [],
+            "debug_selected_results": [result.model_dump() for result in debug_selected_results],
+            "debug_expanded_results": [result.model_dump() for result in debug_expanded_results],
+        }
+
+        generation_started = perf_counter()
+        answer_parts: list[str] = []
+        async for chunk in stream_chat(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_tokens=max_tokens,
+        ):
+            answer_parts.append(chunk)
+            yield {
+                "type": "delta",
+                "content": chunk,
+            }
+
+        generation_time_ms = int((perf_counter() - generation_started) * 1000)
+        yield {
+            "type": "done",
+            "answer": "".join(answer_parts).strip(),
+            "generation_time_ms": generation_time_ms,
+            "total_time_ms": int((perf_counter() - request_started) * 1000),
+        }
 
     async def get_stats(self) -> StatsResponse:
         """Return basic service stats."""
